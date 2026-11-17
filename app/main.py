@@ -12,6 +12,7 @@ import uuid
 from pydantic import ValidationError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.models.envelopes import (
@@ -142,14 +143,31 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    """Service health check endpoint."""
+    """Check that the core in-process matchmaking components can be queried."""
+    try:
+        queue_size = matchmaker_queue.queue_size()
+        active_sessions = session_manager.active_session_count()
+        active_connection_count = len(active_connections)
+    except Exception:
+        logger.exception("Health check failed while querying core services")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "service": settings.APP_NAME,
+                "environment": settings.APP_ENV,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
     return {
         "status": "healthy",
+        "checks": {"matchmaker": "ok", "session_manager": "ok"},
         "service": settings.APP_NAME,
         "environment": settings.APP_ENV,
-        "queue_size": matchmaker_queue.queue_size(),
-        "active_sessions": session_manager.active_session_count(),
-        "active_connections": len(active_connections),
+        "queue_size": queue_size,
+        "active_sessions": active_sessions,
+        "active_connections": active_connection_count,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
