@@ -1,13 +1,10 @@
-"""Two-stage content moderation pipeline, media URL validator, and partner notification."""
+"""Local deterministic content moderation, media URL validation, and partner notification."""
 
-import asyncio
-import inspect
 import ipaddress
 import logging
-import math
 import urllib.parse
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -115,8 +112,7 @@ class ModerationResult(BaseModel):
 class ModerationPipeline:
     """Two-stage content moderation pipeline and media URL validator.
 
-    Stage 1: In-process fast-path normalizer & blocklist (<1ms).
-    Stage 2: Asynchronous AI toxicity classifier scored against TOXICITY_THRESHOLD.
+    Text checks use only the in-process normalizer and blocklist.
     """
 
     def __init__(
@@ -170,129 +166,9 @@ class ModerationPipeline:
             normalized_text=normalized,
         )
 
-    async def moderate_text(
-        self,
-        text: str,
-        provider: Any | None = None,
-    ) -> ModerationResult:
-        """Moderate text message through Stage 1 and Stage 2 pipelines."""
-        if not self.enabled:
-            return ModerationResult.allow(stage="moderation_disabled")
-
-        if not text or not isinstance(text, str):
-            return ModerationResult.allow(stage="empty_text")
-
-        # --- Stage 1: Fast-Path Normalizer & Blocklist (<1ms) ---
-        is_toxic, reason = self.normalizer.check_toxic(text)
-        if is_toxic:
-            logger.info("Stage 1 fast-path flagged toxic message: reason=%s", reason)
-            normalized = (
-                self.normalizer.normalize(text)
-                if hasattr(self.normalizer, "normalize")
-                else None
-            )
-            return ModerationResult.ban(
-                reason=reason or "toxic_language",
-                confidence=1.0,
-                stage="stage1_fastpath",
-                normalized_text=normalized,
-            )
-
-        # --- Stage 2: Deep AI Toxicity Classifier ---
-        if provider is not None:
-            try:
-                score, ai_flagged, ai_reason = await self._call_ai_provider(provider, text)
-                if ai_flagged or score >= self.toxicity_threshold:
-                    logger.info(
-                        "Stage 2 AI provider flagged text: score=%.3f, threshold=%.3f",
-                        score,
-                        self.toxicity_threshold,
-                    )
-                    return ModerationResult.ban(
-                        reason=ai_reason or "ai_detected_toxicity",
-                        confidence=score,
-                        stage="stage2_deep",
-                    )
-            except Exception as e:  # noqa: BLE001 - provider failures must not silently bypass moderation
-                logger.warning("Stage 2 moderation provider error: %s", e)
-                if getattr(settings, "MODERATION_FAIL_OPEN", False):
-                    return ModerationResult.allow(stage="stage2_error_fallback")
-                return ModerationResult.block(
-                    reason="moderation_unavailable",
-                    stage="stage2_error_block",
-                )
-
-        normalized = (
-            self.normalizer.normalize(text)
-            if hasattr(self.normalizer, "normalize")
-            else None
-        )
-        return ModerationResult.allow(
-            stage="stage1_clean" if provider is None else "stage2_clean",
-            normalized_text=normalized,
-        )
-
-    async def _call_ai_provider(
-        self,
-        provider: Any,
-        text: str,
-    ) -> tuple[float, bool, str | None]:
-        """Safely invoke external or mock AI moderation provider."""
-        moderate_fn = getattr(provider, "moderate_text", None)
-        if not callable(moderate_fn):
-            moderate_fn = provider if callable(provider) else None
-
-        if moderate_fn is None:
-            raise TypeError("Moderation provider must expose moderate_text() or be callable")
-
-        if asyncio.iscoroutinefunction(moderate_fn) or inspect.iscoroutinefunction(moderate_fn):
-            result = await moderate_fn(text)
-        else:
-            result = moderate_fn(text)
-            if asyncio.iscoroutine(result):
-                result = await result
-
-        score = 0.0
-        flagged = False
-        reason = None
-
-        if isinstance(result, (float, int)):
-            score = float(result)
-            flagged = score >= self.toxicity_threshold
-        elif isinstance(result, dict):
-            reason = result.get("reason")
-            raw_flagged = result.get("is_flagged")
-            score_val = result.get("score")
-            if score_val is None:
-                score_val = result.get("toxicity_score")
-            if score_val is not None:
-                score = float(score_val)
-                flagged = bool(raw_flagged) if raw_flagged is not None else (score >= self.toxicity_threshold)
-            else:
-                flagged = bool(raw_flagged) if raw_flagged is not None else False
-                score = 1.0 if flagged else 0.0
-        elif isinstance(result, bool):
-            flagged = result
-            score = 1.0 if flagged else 0.0
-        elif hasattr(result, "is_flagged") or hasattr(result, "score"):
-            reason = getattr(result, "reason", None)
-            raw_flagged = getattr(result, "is_flagged", None)
-            score_val = getattr(result, "score", None)
-            if score_val is None:
-                score_val = getattr(result, "toxicity_score", None)
-            if score_val is not None:
-                score = float(score_val)
-                flagged = bool(raw_flagged) if raw_flagged is not None else (score >= self.toxicity_threshold)
-            else:
-                flagged = bool(raw_flagged) if raw_flagged is not None else False
-                score = 1.0 if flagged else 0.0
-        else:
-            raise TypeError("Moderation provider returned an unsupported result type")
-
-        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
-            raise ValueError("Moderation provider returned a score outside the 0.0-1.0 range")
-
-        return score, flagged, reason
+    async def moderate_text(self, text: str) -> ModerationResult:
+        """Moderate text using local deterministic normalization only."""
+        return self.moderate_text_fastpath(text)
 
     def moderate_gif_url(self, url: str) -> ModerationResult:
         """Validate GIF URL protocol, domain allowlist, and formatting safety rules."""
@@ -419,12 +295,9 @@ class ModerationPipeline:
 moderation_pipeline = ModerationPipeline()
 
 
-async def moderate_text(
-    text: str,
-    provider: Any | None = None,
-) -> ModerationResult:
-    """Convenience helper to moderate text using singleton pipeline."""
-    return await moderation_pipeline.moderate_text(text, provider=provider)
+async def moderate_text(text: str) -> ModerationResult:
+    """Convenience helper to moderate text using local rules only."""
+    return await moderation_pipeline.moderate_text(text)
 
 
 def moderate_gif_url(url: str) -> ModerationResult:
