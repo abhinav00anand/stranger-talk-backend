@@ -252,15 +252,9 @@ async def test_t2_f4_malformed_sdp_json(make_client):
 
 
 @pytest.mark.asyncio
-async def test_t2_f4_offer_to_ai_companion_ignored(make_client):
-    """SDP offer sent during an AI companion session is handled gracefully without error."""
+async def test_t2_f4_offer_outside_session_is_rejected(make_client):
+    """WebRTC signaling cannot be relayed before a real human match exists."""
     client = await make_client()
-    await client.join_queue()
-
-    # Wait for match (may be AI companion after timeout or fallback)
-    # If client sends an offer when peer_is_ai is true, server acknowledges or ignores safely
-    await client.send_sdp_offer("v=0\r\ntest-sdp", session_id="ai-virtual-session")
-
-    drained = await client.drain(timeout=0.5)
-    # Server should not disconnect with internal error
-    assert not any(m.get("payload", {}).get("code") == "INTERNAL_ERROR" for m in drained)
+    await client.send_sdp_offer("v=0\\r\\ntest-sdp", session_id="no-active-session")
+    error = await client.recv_type("error", timeout=3.0)
+    assert error["payload"]["code"] == "NOT_IN_SESSION"
