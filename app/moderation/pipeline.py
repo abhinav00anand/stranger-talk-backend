@@ -18,7 +18,6 @@ from app.moderation.normalizer import TextNormalizer, text_normalizer
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOXICITY_THRESHOLD = 0.8
 DEFAULT_ALLOWED_GIF_DOMAINS = [
     "giphy.com",
     "*.giphy.com",
@@ -118,16 +117,10 @@ class ModerationPipeline:
     def __init__(
         self,
         normalizer: TextNormalizer | None = None,
-        toxicity_threshold: float | None = None,
         allowed_gif_domains: list[str] | None = None,
         enabled: bool | None = None,
     ) -> None:
         self.normalizer = normalizer or text_normalizer
-        self.toxicity_threshold = (
-            toxicity_threshold
-            if toxicity_threshold is not None
-            else getattr(settings, "TOXICITY_THRESHOLD", DEFAULT_TOXICITY_THRESHOLD)
-        )
         self.allowed_gif_domains = (
             allowed_gif_domains
             if allowed_gif_domains is not None
