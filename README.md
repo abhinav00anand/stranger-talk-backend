@@ -1,6 +1,6 @@
 # Stranger Talk Backend (ChatFreely)
 
-Real-time anonymous stranger chat and live WebRTC audio calling service inspired by OpenTalk. Built with FastAPI, WebSockets, STUN audio signaling, two-stage AI moderation, auto-ban gatekeeping, and human-like AI companion fallbacks.
+Real-time anonymous stranger chat and live WebRTC audio calling service inspired by OpenTalk. Built with FastAPI, WebSockets, STUN audio signaling, deterministic local moderation, and human-only matchmaking.
 
 ---
 
@@ -9,11 +9,9 @@ Real-time anonymous stranger chat and live WebRTC audio calling service inspired
 - **Live 1-on-1 WebRTC Voice Signaling**: Peer-to-peer audio streaming using Google public STUN (`stun:stun.l.google.com:19302`) with deterministic initiator assignment for glare-free SDP negotiation.
 - **Dynamic Matchmaking Engine**: FIFO pairing queue with topic matching, instant skip re-queueing, and graceful leave disconnects.
 - **In-Session Messaging & GIF Validation**: Real-time text messaging with typing indicators (`is_typing`), and strict HTTPS validation for trusted GIF providers (Giphy, Tenor).
-- **Two-Stage Content Moderation & Auto-Ban**:
+- **Local Content Moderation & Auto-Ban**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
-  - *Stage 2*: AI toxicity classifier.
   - *Gatekeeper*: Instant WebSocket termination (`CloseCode 1008`) and IP ban persistence. Innocent partners are shielded and given one-click re-queue.
-- **Human-like AI Companion Fallback**: When matchmaking queues are empty, queued users automatically pair with an AI companion after a configurable timeout (default 5s) featuring natural typing delays, realistic typing cadence, and conversational memory.
 
 ---
 
@@ -61,7 +59,7 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 | Type | Payload Example | Description |
 | :--- | :--- | :--- |
 | `queued` | `{"position": 1, "estimated_wait_seconds": 2}` | Queue status confirmation. |
-| `matched` | `{"is_initiator": true, "peer_is_ai": false, "peer_alias": "Stranger", "ice_servers": [...]}` | Paired with a peer or AI companion. |
+| `matched` | `{"is_initiator": true, "peer_alias": "Stranger", "partner_id": "...", "ice_servers": [...]}` | Paired with another connected human. |
 | `chat` | `{"text": "Hey!", "sender": "peer", "message_id": "..."}` | Inbound text message. |
 | `gif` | `{"url": "...", "width": 400, "height": 300, "sender": "peer"}` | Inbound validated GIF. |
 | `typing` | `{"is_typing": true}` | Partner typing status. |
@@ -76,7 +74,7 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 
 ## 🧪 Running Automated Tests
 
-The backend includes a 292-test test harness (199 unit tests + 93 E2E integration scenarios):
+The backend includes automated unit and WebSocket integration tests:
 
 ```bash
 # Run complete test suite
@@ -93,9 +91,8 @@ py -3.14 -m pytest -q
 - ALLOWED_ORIGINS: optional JSON array of exact browser origins, for example ["https://your-frontend.example"]. When configured, the API applies this allowlist to credentialed CORS and browser WebSocket handshakes.
 - WS_MAX_MESSAGE_BYTES: maximum inbound WebSocket frame size (default 262,144 bytes).
 - WS_RATE_LIMIT_MESSAGES and WS_RATE_LIMIT_WINDOW_SECONDS: per-connection inbound frame budget (defaults to 60 messages per 10 seconds).
-- MODERATION_FAIL_OPEN: defaults to false. If Stage 2 moderation fails, the message is withheld without banning the user. Set true only when availability is intentionally preferred over moderation coverage.
 
-Deployment note: matchmaking queues, sessions, active connections, and IP bans are process-local in-memory state. Run a single application process/instance until shared Redis-backed state is implemented; multiple workers or replicas will not share these records.
+Deployment note: matchmaking queues, sessions, active connections, and IP bans are process-local in-memory state. Run exactly one application process/replica until shared Redis-backed state is implemented. Multiple workers or replicas maintain separate queues and cannot match users connected to different instances.
 
 ## 🚀 Local Development Setup
 

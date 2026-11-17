@@ -4,7 +4,6 @@ Covers:
 - Realistic end-to-end user journeys, stress workloads, and lifecycles.
 - Exact tests specified in TEST_INFRA.md:
   1. test_t4_multi_user_stranger_chat_traffic
-  2. test_t4_lone_night_owl_ai_conversation
   3. test_t4_bad_actor_swift_banishment_journey
   4. test_t4_complete_webrtc_call_lifecycle
   5. test_t4_high_concurrency_rapid_skip_marathon
@@ -18,15 +17,6 @@ import websockets
 # ============================================================================
 # Helpers & Fixtures
 # ============================================================================
-
-@pytest.fixture
-def fast_ai_timeout(monkeypatch):
-    """Speed up AI fallback watchdog timer for snappy test execution."""
-    try:
-        from app.config import settings
-        monkeypatch.setattr(settings, "AI_FALLBACK_TIMEOUT_SECONDS", 0.5)
-    except Exception:
-        pass
 
 
 # ============================================================================
@@ -136,71 +126,6 @@ async def test_t4_multi_user_stranger_chat_traffic(make_client):
         except Exception:
             pass
         await c.close()
-
-
-@pytest.mark.asyncio
-async def test_t4_lone_night_owl_ai_conversation(make_client, fast_ai_timeout):
-    """Single user joins quiet queue, transitions to AI companion after timeout, conducts natural multi-turn conversation, observes typing cadence, skips, and leaves cleanly.
-
-    Validates lone user experience when queue is sparse, AI companion fallback watchdog,
-    typing indicator cadence before AI replies, multi-turn sliding context, and graceful exit.
-    """
-    client = await make_client()
-
-    # Lone user joins queue
-    await client.join_queue()
-    queued_msg = await client.recv_type("queued", timeout=3.0)
-    assert queued_msg["type"] == "queued"
-
-    # AI companion watchdog triggers fallback match
-    match_msg = await client.recv_type("matched", timeout=8.0)
-    assert match_msg["type"] == "matched"
-    assert match_msg.get("payload", {}).get("peer_is_ai") is True
-    session_id = match_msg["session_id"]
-    assert session_id is not None
-
-    alias = match_msg.get("payload", {}).get("peer_alias", "")
-    assert isinstance(alias, str) and len(alias) > 0
-
-    # Turn 1: User says hello and observes typing indicator before response
-    await client.send_chat("Hello, is anyone still awake tonight?")
-
-    received_typing = False
-    received_chat = None
-    start = asyncio.get_event_loop().time()
-    while asyncio.get_event_loop().time() - start < 8.0:
-        envelope = await client.recv_json(timeout=4.0)
-        t = envelope.get("type")
-        if t == "typing" and envelope.get("payload", {}).get("is_typing") is True:
-            received_typing = True
-        elif t == "chat":
-            received_chat = envelope
-            break
-
-    assert received_typing is True, "AI companion failed to emit typing indicator prior to chat reply"
-    assert received_chat is not None
-    assert received_chat["payload"]["sender"] in ("peer", "Stranger", "ai")
-    assert len(received_chat["payload"]["text"].strip()) > 0
-
-    # Turn 2: Follow-up question
-    await client.send_chat("I love reading late at night. Do you have a favorite genre?")
-    reply_2 = await client.recv_type("chat", timeout=8.0)
-    assert len(reply_2["payload"]["text"].strip()) > 0
-
-    # Turn 3: Closing thought
-    await client.send_chat("That sounds fascinating! Thanks for chatting with me.")
-    reply_3 = await client.recv_type("chat", timeout=8.0)
-    assert len(reply_3["payload"]["text"].strip()) > 0
-
-    # User invokes skip
-    await client.skip()
-    msg_queued_again = await client.recv_type("queued", timeout=5.0)
-    assert msg_queued_again["type"] == "queued"
-
-    # User departs cleanly
-    await client.leave()
-    await client.drain(timeout=0.3)
-    await client.close()
 
 
 @pytest.mark.asyncio

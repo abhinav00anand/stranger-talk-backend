@@ -18,8 +18,6 @@ jobs:
     timeout-minutes: 15
     env:
       APP_ENV: test
-      AI_PROVIDER: mock
-      MODERATION_PROVIDER: mock
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

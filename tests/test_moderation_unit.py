@@ -10,13 +10,7 @@ Covers:
    - Pre-compiled regex patterns (self-harm, threats, slurs, harassment, sexual violence)
    - Benign word false-positive immunity (skills, whiskeys, grapes, spooky, pharmacist)
    - Latency benchmark (<1ms per check)
-3. ModerationPipeline Stage 2 Deep AI Moderation:
-   - Short-circuiting when Stage 1 flags
-   - Provider scoring against TOXICITY_THRESHOLD
-   - Async provider support
-   - Sync provider support
-   - Provider exception fail-closed default with explicit fail-open override
-   - MODERATION_ENABLED=False bypass
+3. ModerationPipeline local deterministic text checks and MODERATION_ENABLED=False bypass
 4. Media/GIF URL Validator:
    - HTTPS enforcement
    - Allowed domain & wildcard matching (giphy.com, tenor.com)
@@ -45,7 +39,6 @@ Covers:
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.config import settings
@@ -111,7 +104,7 @@ def test_moderation_result_ban_factory():
 
 def test_moderation_result_serialization():
     """ModerationResult cleanly serializes to dict and JSON."""
-    res = ModerationResult.ban(reason="violent_threat", confidence=0.95, stage="stage2_deep")
+    res = ModerationResult.ban(reason="violent_threat", confidence=0.95, stage="stage1_fastpath")
     data = res.model_dump()
     assert data["is_flagged"] is True
     assert data["reason"] == "violent_threat"
@@ -332,155 +325,21 @@ def test_normalizer_redos_resilience():
 
 
 # ============================================================================
-# 3. ModerationPipeline Stage 2 Deep AI Moderation Tests
+# 3. Local deterministic text moderation tests
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_stage2_skipped_when_stage1_flags():
-    """Stage 2 AI provider is never called if Stage 1 fast-path catches toxic content."""
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock()
-
+async def test_local_text_moderation_uses_fastpath_only():
     pipeline = ModerationPipeline()
-    res = await pipeline.moderate_text("kys kill yourself", provider=mock_provider)
+    clean = await pipeline.moderate_text("A normal message to a stranger.")
+    assert clean.is_clean
+    assert clean.stage == "stage1_clean"
 
-    assert res.is_flagged is True
-    assert res.action == "ban"
-    assert res.stage == "stage1_fastpath"
-    # Stage 2 should not have been called
-    mock_provider.moderate_text.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_stage2_called_when_stage1_clean():
-    """Stage 2 AI provider is called when Stage 1 is clean."""
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(return_value={"score": 0.2, "is_flagged": False})
-
-    pipeline = ModerationPipeline(toxicity_threshold=0.8)
-    res = await pipeline.moderate_text("This is clean text.", provider=mock_provider)
-
-    assert res.is_flagged is False
-    assert res.action == "allow"
-    assert res.stage == "stage2_clean"
-    mock_provider.moderate_text.assert_called_once_with("This is clean text.")
+    flagged = await pipeline.moderate_text("kys kill yourself")
+    assert flagged.is_bannable
+    assert flagged.stage == "stage1_fastpath"
 
 
-@pytest.mark.asyncio
-async def test_stage2_score_above_threshold_bans():
-    """AI provider returning score >= toxicity_threshold results in a ban."""
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(return_value={"score": 0.85, "reason": "subtle_hate"})
-
-    pipeline = ModerationPipeline(toxicity_threshold=0.8)
-    res = await pipeline.moderate_text("Passive aggressive borderline message", provider=mock_provider)
-
-    assert res.is_flagged is True
-    assert res.action == "ban"
-    assert res.confidence == 0.85
-    assert res.reason == "subtle_hate"
-    assert res.stage == "stage2_deep"
-
-
-@pytest.mark.asyncio
-async def test_stage2_score_below_threshold_allows():
-    """AI provider returning score < toxicity_threshold allows the message."""
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(return_value=0.45)
-
-    pipeline = ModerationPipeline(toxicity_threshold=0.8)
-    res = await pipeline.moderate_text("Slightly spicy but clean text", provider=mock_provider)
-
-    assert res.is_flagged is False
-    assert res.action == "allow"
-    assert res.stage == "stage2_clean"
-
-
-@pytest.mark.asyncio
-async def test_stage2_sync_provider_support():
-    """Pipeline seamlessly supports synchronous provider functions."""
-    def sync_moderate(text: str) -> float:
-        return 0.95
-
-    pipeline = ModerationPipeline(toxicity_threshold=0.8)
-    res = await pipeline.moderate_text("Evaluating with sync provider", provider=sync_moderate)
-
-    assert res.is_flagged is True
-    assert res.action == "ban"
-    assert res.confidence == 0.95
-
-
-@pytest.mark.asyncio
-async def test_stage2_provider_exception_blocks_without_banning():
-    """Provider failures withhold the message without issuing an unjustified user ban."""
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(side_effect=RuntimeError("AI Provider Service Unavailable"))
-
-    pipeline = ModerationPipeline()
-    res = await pipeline.moderate_text("Valid text during AI outage", provider=mock_provider)
-
-    assert res.is_flagged is True
-    assert res.action == "block"
-    assert res.is_bannable is False
-    assert res.stage == "stage2_error_block"
-
-
-@pytest.mark.asyncio
-async def test_stage2_provider_exception_can_fail_open_when_explicitly_enabled(monkeypatch):
-    """The fail-open exception is an explicit deployment choice, not the default."""
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "MODERATION_FAIL_OPEN", True)
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(side_effect=RuntimeError("AI Provider Service Unavailable"))
-
-    pipeline = ModerationPipeline()
-    res = await pipeline.moderate_text("Valid text during AI outage", provider=mock_provider)
-
-    assert res.is_flagged is False
-    assert res.action == "allow"
-    assert res.stage == "stage2_error_fallback"
-
-
-@pytest.mark.asyncio
-async def test_stage2_provider_score_none_flagged_bans():
-    """AI provider returning dict with score=None and is_flagged=True triggers a ban."""
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(
-        return_value={"score": None, "is_flagged": True, "reason": "toxic_intent"}
-    )
-
-    pipeline = ModerationPipeline()
-    res = await pipeline.moderate_text("Borderline toxic statement", provider=mock_provider)
-
-    assert res.is_flagged is True
-    assert res.action == "ban"
-    assert res.reason == "toxic_intent"
-    assert res.confidence == 1.0
-    assert res.stage == "stage2_deep"
-
-
-@pytest.mark.asyncio
-async def test_stage2_provider_object_score_none_flagged_bans():
-    """AI provider returning an object with score=None and is_flagged=True triggers a ban."""
-    class CustomAIResult:
-        score = None
-        is_flagged = True
-        reason = "object_flagged"
-
-    mock_provider = MagicMock()
-    mock_provider.moderate_text = AsyncMock(return_value=CustomAIResult())
-
-    pipeline = ModerationPipeline()
-    res = await pipeline.moderate_text("Borderline toxic statement", provider=mock_provider)
-
-    assert res.is_flagged is True
-    assert res.action == "ban"
-    assert res.reason == "object_flagged"
-    assert res.confidence == 1.0
-
-
-@pytest.mark.asyncio
 async def test_stage2_moderation_disabled_setting():
     """When moderation is disabled, even toxic content is allowed."""
     pipeline = ModerationPipeline(enabled=False)

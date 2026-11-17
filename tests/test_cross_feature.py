@@ -2,11 +2,10 @@
 
 Covers:
 - Pairwise feature interactions across matchmaking, skip, leave, signaling,
-  messaging, GIF exchange, AI companion fallback, and moderation bans.
+  messaging, GIF exchange, and moderation bans.
 - Exact tests specified in TEST_INFRA.md:
   1. test_t3_matchmaking_skip_and_chat
   2. test_t3_matchmaking_signaling_and_gif
-  3. test_t3_ai_fallback_chat_and_skip_to_human
   4. test_t3_chat_moderation_ban_and_partner_requeue
   5. test_t3_gif_moderation_ban_and_ip_blacklist
   6. test_t3_signaling_sudden_disconnect_and_requeue
@@ -22,15 +21,6 @@ import websockets
 # ============================================================================
 # Helpers & Fixtures
 # ============================================================================
-
-@pytest.fixture
-def fast_ai_timeout(monkeypatch):
-    """Speed up AI fallback watchdog timer for snappy test execution."""
-    try:
-        from app.config import settings
-        monkeypatch.setattr(settings, "AI_FALLBACK_TIMEOUT_SECONDS", 0.5)
-    except Exception:
-        pass
 
 
 async def _pair_two_clients(make_client):
@@ -196,63 +186,6 @@ async def test_t3_matchmaking_signaling_and_gif(make_client):
     assert received_gif2["payload"]["url"] == gif_tenor
     assert received_gif2["payload"]["title"] == "Thumbs Up"
     assert received_gif2["payload"]["sender"] == "peer"
-
-
-@pytest.mark.asyncio
-async def test_t3_ai_fallback_chat_and_skip_to_human(make_client, fast_ai_timeout):
-    """User waits for AI match, chats with AI, skips, and immediately matches with a newly connected human peer.
-
-    Verifies queue timeout watchdog trigger, companion conversation responses, skip parity
-    when matched with AI, and seamless re-entry leading to a human-to-human match.
-    """
-    client_a = await make_client()
-    await client_a.join_queue()
-    await client_a.recv_type("queued", timeout=3.0)
-
-    # Wait for AI companion watchdog fallback trigger
-    ai_match = await client_a.recv_type("matched", timeout=8.0)
-    assert ai_match["type"] == "matched"
-    assert ai_match.get("payload", {}).get("peer_is_ai") is True
-    ai_session_id = ai_match["session_id"]
-    assert ai_session_id is not None
-
-    # Chat with AI companion
-    await client_a.send_chat("Hello AI companion! How are you doing tonight?")
-    ai_reply = await client_a.recv_type("chat", timeout=8.0)
-    assert ai_reply["type"] == "chat"
-    assert ai_reply["session_id"] == ai_session_id
-    text = ai_reply.get("payload", {}).get("text", "")
-    assert isinstance(text, str) and len(text.strip()) > 0
-    assert ai_reply.get("payload", {}).get("sender") in ("peer", "Stranger", "ai")
-
-    # User A skips the AI companion session
-    await client_a.skip()
-    queued_msg = await client_a.recv_type("queued", timeout=5.0)
-    assert queued_msg["type"] == "queued"
-
-    # Human user B connects and joins the queue
-    client_b = await make_client()
-    await client_b.join_queue()
-
-    # User A and User B match into a human-to-human session
-    human_match_a = await client_a.recv_type("matched", timeout=5.0)
-    human_match_b = await client_b.recv_type("matched", timeout=5.0)
-
-    assert human_match_a["session_id"] == human_match_b["session_id"]
-    assert human_match_a["session_id"] != ai_session_id
-    assert human_match_a.get("payload", {}).get("peer_is_ai") is not True
-    assert human_match_b.get("payload", {}).get("peer_is_ai") is not True
-
-    # Exchange messages in the human session
-    await client_a.send_chat("Hello human friend!")
-    b_received = await client_b.recv_type("chat", timeout=5.0)
-    assert b_received["payload"]["text"] == "Hello human friend!"
-    assert b_received["payload"]["sender"] == "peer"
-
-    await client_b.send_chat("Great to meet a fellow human!")
-    a_received = await client_a.recv_type("chat", timeout=5.0)
-    assert a_received["payload"]["text"] == "Great to meet a fellow human!"
-    assert a_received["payload"]["sender"] == "peer"
 
 
 @pytest.mark.asyncio
