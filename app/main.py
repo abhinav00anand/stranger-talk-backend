@@ -1,10 +1,12 @@
 """FastAPI application entry point, lifecycle management, and WebSocket router."""
 
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 import logging
+from time import monotonic
 import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
@@ -20,7 +22,6 @@ from app.models.envelopes import (
     QueuedPayload,
     SdpPayload,
     ServerMessageType,
-    TypingPayload,
     WebSocketEnvelope,
 )
 from app.models.session import ClientState
@@ -34,9 +35,31 @@ from app.moderation.pipeline import (
     moderate_text,
 )
 from app.ai.companion_manager import CompanionManager, QueueWatchdog
-from app.ai.factory import get_ai_companion_provider
+from app.ai.factory import get_ai_companion_provider, get_moderation_provider
 
 logger = logging.getLogger(__name__)
+
+
+class SlidingWindowRateLimiter:
+    """Small per-connection sliding-window limiter for inbound WebSocket frames."""
+
+    def __init__(self, limit: int, window_seconds: float) -> None:
+        if limit < 1 or window_seconds <= 0:
+            raise ValueError("Rate limit and window duration must be positive")
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._timestamps = deque()
+
+    def allow(self, now: float | None = None) -> bool:
+        current = monotonic() if now is None else now
+        cutoff = current - self.window_seconds
+        while self._timestamps and self._timestamps[0] <= cutoff:
+            self._timestamps.popleft()
+        if len(self._timestamps) >= self.limit:
+            return False
+        self._timestamps.append(current)
+        return True
+
 
 # Global Singletons
 matchmaker_queue = MatchmakerQueue()
@@ -105,8 +128,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.ALLOWED_ORIGINS or ["*"],
+    allow_credentials=bool(settings.ALLOWED_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -235,11 +258,11 @@ async def _handle_skip(client_id: str, client_ip: str, session_id: str | None) -
         await send_to_client(client_id, err_env)
         return
 
-    # Check session_id mismatch
-    if session_id is not None and session.session_id != session_id:
+    # Session-scoped commands must carry the current session identifier.
+    if not session_id or session.session_id != session_id:
         err_env = WebSocketEnvelope.create(
             msg_type=ServerMessageType.ERROR,
-            payload={"code": "INVALID_SESSION", "message": "Session ID mismatch"},
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
             session_id=session_id,
         )
         await send_to_client(client_id, err_env)
@@ -278,11 +301,11 @@ async def _handle_leave(client_id: str, session_id: str | None) -> None:
         await send_to_client(client_id, err_env)
         return
 
-    # Check session_id mismatch if provided
-    if session_id is not None and session.session_id != session_id:
+    # Session-scoped commands must carry the current session identifier.
+    if not session_id or session.session_id != session_id:
         err_env = WebSocketEnvelope.create(
             msg_type=ServerMessageType.ERROR,
-            payload={"code": "INVALID_SESSION", "message": "Session ID mismatch"},
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
             session_id=session_id,
         )
         await send_to_client(client_id, err_env)
@@ -332,9 +355,41 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
         )
         await send_to_client(client_id, err_env)
         return
+    if not session_id or session.session_id != session_id:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
+            session_id=session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
 
-    # Stage 1 & 2 Moderation
-    mod_result = await moderate_text(text)
+    # Stage 1 & 2 Moderation. Resolve the configured provider for every message.
+    try:
+        moderation_provider = get_moderation_provider()
+        mod_result = await moderate_text(text, provider=moderation_provider)
+    except Exception:
+        logger.exception("Moderation provider could not be initialized")
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "MODERATION_UNAVAILABLE", "message": "Message could not be checked. Please try again."},
+            session_id=session.session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
+
+    # Do not deliver a message if its session ended while moderation was awaiting.
+    if session_manager.get_session_by_client(client_id) is not session or not session.is_active():
+        return
+
+    if mod_result.is_blocked:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "MODERATION_UNAVAILABLE", "message": "Message could not be checked. Please try again."},
+            session_id=session.session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
     if mod_result.is_bannable:
         # 1. Ban client IP
         if not client_ip.startswith("test_innocent_"):
@@ -390,44 +445,22 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
 
 
 async def _process_ai_chat_response(session_id: str, client_id: str, user_text: str) -> None:
-    """Async background task generating simulated human-like AI companion reply."""
-    # 1. Simulate typing indicator on
-    typing_on = WebSocketEnvelope.create(
-        msg_type=ServerMessageType.TYPING,
-        payload=TypingPayload(is_typing=True).model_dump(),
-        session_id=session_id,
-    )
-    await send_to_client(client_id, typing_on)
-
-    # 2. Generate reply with human-like typing cadence
+    """Run the companion manager's complete typing, generation, and delivery pipeline."""
     try:
-        reply_text = await companion_manager.handle_client_message(session_id, user_text)
-    except Exception as exc:
-        logger.error("AI companion error: %s", exc)
-        reply_text = "haha that's pretty cool honestly"
-
-    # 3. Simulate typing indicator off
-    typing_off = WebSocketEnvelope.create(
-        msg_type=ServerMessageType.TYPING,
-        payload=TypingPayload(is_typing=False).model_dump(),
-        session_id=session_id,
-    )
-    await send_to_client(client_id, typing_off)
-
-    # 4. Deliver AI chat message
-    ai_msg = WebSocketEnvelope.create(
-        msg_type=ServerMessageType.CHAT,
-        payload={"text": reply_text, "sender": "peer", "message_id": str(uuid.uuid4())},
-        session_id=session_id,
-    )
-    await send_to_client(client_id, ai_msg)
+        await companion_manager.process_user_message(
+            session_id=session_id,
+            text=user_text,
+            send_envelope_fn=send_to_client,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("AI companion message processing failed for session %s", session_id)
 
 
 async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, session_id: str | None) -> None:
     """Handle GIF exchange with strict URL and domain validation."""
     url = payload_data.get("url", "")
-    mod_result = moderate_gif_url(url)
-
     session = session_manager.get_session_by_client(client_id)
     if not session or not session.is_active():
         err_env = WebSocketEnvelope.create(
@@ -437,10 +470,21 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
         )
         await send_to_client(client_id, err_env)
         return
+    if not session_id or session.session_id != session_id:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
+            session_id=session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
+
+    mod_result = moderate_gif_url(url)
+    safe_url = url.strip() if isinstance(url, str) else ""
 
     if mod_result.is_flagged:
         # If url contains malware / exploit keywords, treat as severe bannable offense
-        if any(bad in url.lower() for bad in ("malware", "exploit", "virus", "trojan")):
+        if any(bad in safe_url.lower() for bad in ("malware", "exploit", "virus", "trojan")):
             ban_manager.record_ban(
                 ip=client_ip,
                 reason="Policy violation: malicious link",
@@ -471,6 +515,11 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
         await send_to_client(client_id, err_env)
         return
 
+    # Only forward a preview URL if it passes the same strict HTTPS/domain policy.
+    preview_url = payload_data.get("preview_url")
+    if preview_url and moderate_gif_url(preview_url).is_flagged:
+        preview_url = None
+
     # Sanitize dimensions
     raw_w = payload_data.get("width")
     raw_h = payload_data.get("height")
@@ -482,11 +531,11 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
     relayed = WebSocketEnvelope.create(
         msg_type=ServerMessageType.GIF,
         payload={
-            "url": url,
+            "url": safe_url,
             "sender": "peer",
             "message_id": msg_id,
             "provider": payload_data.get("provider", "giphy"),
-            "preview_url": payload_data.get("preview_url"),
+            "preview_url": preview_url,
             "title": payload_data.get("title"),
             "width": sanitized_w,
             "height": sanitized_h,
@@ -500,7 +549,7 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
 async def _handle_typing(client_id: str, payload_data: dict, session_id: str | None) -> None:
     """Relay typing indicator to session peer."""
     session = session_manager.get_session_by_client(client_id)
-    if not session or not session.is_active():
+    if not session or not session.is_active() or not session_id or session.session_id != session_id:
         return
     if not session.is_ai:
         partner_id = session.get_partner_id(client_id)
@@ -519,6 +568,14 @@ async def _handle_sdp_offer(client_id: str, payload_data: dict, session_id: str 
         err_env = WebSocketEnvelope.create(
             msg_type=ServerMessageType.ERROR,
             payload={"code": "NOT_IN_SESSION", "message": "Cannot send offer outside active session"},
+            session_id=session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
+    if not session_id or session.session_id != session_id:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
             session_id=session_id,
         )
         await send_to_client(client_id, err_env)
@@ -562,6 +619,14 @@ async def _handle_sdp_answer(client_id: str, payload_data: dict, session_id: str
         )
         await send_to_client(client_id, err_env)
         return
+    if not session_id or session.session_id != session_id:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
+            session_id=session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
 
     if session.is_ai:
         return
@@ -590,6 +655,14 @@ async def _handle_ice_candidate(client_id: str, payload_data: dict, session_id: 
         )
         await send_to_client(client_id, err_env)
         return
+    if not session_id or session.session_id != session_id:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match"},
+            session_id=session_id,
+        )
+        await send_to_client(client_id, err_env)
+        return
 
     if session.is_ai:
         return
@@ -611,6 +684,13 @@ async def _handle_ice_candidate(client_id: str, payload_data: dict, session_id: 
 async def websocket_endpoint(websocket: WebSocket):
     """Main WebSocket connection endpoint handling anonymous matchmaking, signaling, chat & moderation."""
     client_ip = websocket.client.host if websocket.client else "127.0.0.1"
+    origin = websocket.headers.get("origin")
+    if settings.ALLOWED_ORIGINS and origin and origin not in settings.ALLOWED_ORIGINS:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Origin not allowed",
+        )
+        return
 
     # Pre-handshake IP ban check
     if ban_manager.is_banned(client_ip):
@@ -633,16 +713,39 @@ async def websocket_endpoint(websocket: WebSocket):
         active_connections[client_id] = websocket
         connection_ips[client_id] = client_ip
 
+    message_limiter = SlidingWindowRateLimiter(
+        limit=settings.WS_RATE_LIMIT_MESSAGES,
+        window_seconds=settings.WS_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
     try:
         while True:
             raw_text = await websocket.receive_text()
+            if len(raw_text.encode("utf-8")) > settings.WS_MAX_MESSAGE_BYTES:
+                await websocket.close(code=1009, reason="Message too large")
+                break
+            if not message_limiter.allow():
+                await websocket.close(code=1008, reason="Rate limit exceeded")
+                break
+
             try:
                 data = json.loads(raw_text)
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if not isinstance(data, dict):
                 continue
 
             msg_type = data.get("type")
             payload = data.get("payload") or {}
+            if not isinstance(payload, dict):
+                err_env = WebSocketEnvelope.create(
+                    msg_type=ServerMessageType.ERROR,
+                    payload={"code": "INVALID_PAYLOAD", "message": "Envelope payload must be a JSON object"},
+                    session_id=data.get("session_id") if isinstance(data.get("session_id"), str) else None,
+                )
+                await send_to_client(client_id, err_env)
+                continue
             session_id = data.get("session_id")
 
             if msg_type == "join_queue":

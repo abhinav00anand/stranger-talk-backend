@@ -15,7 +15,7 @@ Covers:
    - Provider scoring against TOXICITY_THRESHOLD
    - Async provider support
    - Sync provider support
-   - Provider exception fail-open resiliency
+   - Provider exception fail-closed default with explicit fail-open override
    - MODERATION_ENABLED=False bypass
 4. Media/GIF URL Validator:
    - HTTPS enforcement
@@ -411,8 +411,26 @@ async def test_stage2_sync_provider_support():
 
 
 @pytest.mark.asyncio
-async def test_stage2_provider_exception_fail_open():
-    """Provider network or API errors fail open without crashing or banning the user."""
+async def test_stage2_provider_exception_blocks_without_banning():
+    """Provider failures withhold the message without issuing an unjustified user ban."""
+    mock_provider = MagicMock()
+    mock_provider.moderate_text = AsyncMock(side_effect=RuntimeError("AI Provider Service Unavailable"))
+
+    pipeline = ModerationPipeline()
+    res = await pipeline.moderate_text("Valid text during AI outage", provider=mock_provider)
+
+    assert res.is_flagged is True
+    assert res.action == "block"
+    assert res.is_bannable is False
+    assert res.stage == "stage2_error_block"
+
+
+@pytest.mark.asyncio
+async def test_stage2_provider_exception_can_fail_open_when_explicitly_enabled(monkeypatch):
+    """The fail-open exception is an explicit deployment choice, not the default."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MODERATION_FAIL_OPEN", True)
     mock_provider = MagicMock()
     mock_provider.moderate_text = AsyncMock(side_effect=RuntimeError("AI Provider Service Unavailable"))
 
