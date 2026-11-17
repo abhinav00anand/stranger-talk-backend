@@ -33,7 +33,7 @@ def get_ai_companion_provider() -> BaseAICompanionProvider:
             if gemini_key and gemini_key.strip():
                 _companion_provider = GeminiAICompanionProvider(
                     api_key=gemini_key.strip(),
-                    model=getattr(settings, "GEMINI_MODEL", "gemini-2.0-flash"),
+                    model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"),
                 )
             else:
                 logger.warning("AI_PROVIDER is set to 'gemini' but GEMINI_API_KEY is not configured. Falling back to Mock.")
@@ -62,11 +62,11 @@ def get_moderation_provider() -> BaseModerationProvider:
             if gemini_key and gemini_key.strip():
                 _moderation_provider = GeminiModerationProvider(
                     api_key=gemini_key.strip(),
-                    model=getattr(settings, "GEMINI_MODEL", "gemini-2.0-flash"),
+                    model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"),
                 )
             else:
                 logger.error("MODERATION_PROVIDER is 'gemini' but GEMINI_API_KEY is unset; moderation will fail closed.")
-                _moderation_provider = GeminiModerationProvider(api_key=None, model=getattr(settings, "GEMINI_MODEL", "gemini-2.0-flash"))
+                _moderation_provider = GeminiModerationProvider(api_key=None, model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"))
         else:
             _moderation_provider = MockModerationProvider()
 
