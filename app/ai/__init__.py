@@ -10,6 +10,7 @@ from app.ai.factory import (
     set_moderation_provider,
 )
 from app.ai.gemini_provider import GeminiAICompanionProvider, GeminiModerationProvider
+from app.ai.groq_provider import GroqAICompanionProvider
 from app.ai.mock_provider import MockAICompanionProvider, MockModerationProvider
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "CompanionManager",
     "GeminiAICompanionProvider",
     "GeminiModerationProvider",
+    "GroqAICompanionProvider",
     "MockAICompanionProvider",
     "MockModerationProvider",
     "QueueWatchdog",
