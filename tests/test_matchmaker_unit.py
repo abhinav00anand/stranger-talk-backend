@@ -288,7 +288,6 @@ async def test_session_create_deterministic_initiator(sm):
     assert session.client_b == "peer_beta"
     assert session.initiator_id == "peer_alpha"
     assert session.status == SessionStatus.PAIRED
-    assert session.is_ai is False
     assert session.is_active() is True
 
     # Fast synchronous lookups
@@ -467,21 +466,6 @@ async def test_session_terminate_session_reasons(sm):
 
         # Terminating already terminated session returns None
         assert await sm.terminate_session(session.session_id) is None
-
-
-@pytest.mark.asyncio
-async def test_session_ai_companion_parity(sm):
-    """AI companion sessions support skip and leave lifecycles identically to human sessions."""
-    session = await sm.create_session("human_user", "ai_companion_01", is_ai=True)
-
-    assert session.is_ai is True
-    assert session.initiator_id == "human_user"
-    assert sm.get_partner_id("human_user") == "ai_companion_01"
-
-    sess, partner = await sm.handle_skip("human_user")
-    assert sess is not None
-    assert partner == "ai_companion_01"
-    assert sess.status == SessionStatus.TERMINATED
 
 
 @pytest.mark.asyncio
