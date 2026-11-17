@@ -99,3 +99,54 @@ def test_only_one_websocket_route_is_registered():
         if route.__class__.__name__ == "APIWebSocketRoute" and route.path == "/ws"
     ]
     assert len(websocket_routes) == 1, f"Expected exactly one /ws route, found {len(websocket_routes)}"
+
+@pytest.mark.asyncio
+async def test_gemini_runtime_failure_really_calls_groq_fallback():
+    from app.ai.gemini_provider import GeminiAICompanionProvider
+
+    class FakeGeminiModels:
+        async def generate_content(self, **kwargs):
+            raise RuntimeError("simulated Gemini outage")
+
+    class FakeGeminiClient:
+        class Aio:
+            models = FakeGeminiModels()
+
+        aio = Aio()
+
+    class FakeGroqResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "reply from Groq fallback"}}]}
+
+    class FakeGroqClient:
+        def __init__(self):
+            self.called = False
+
+        async def post(self, path, json):
+            self.called = True
+            return FakeGroqResponse()
+
+    groq_client = FakeGroqClient()
+    groq = GroqAICompanionProvider(
+        api_key="groq-test-key",
+        model="openai/gpt-oss-20b",
+        client=groq_client,
+    )
+    gemini = GeminiAICompanionProvider(
+        api_key="google-test-key",
+        client=FakeGeminiClient(),
+        fallback_provider=groq,
+        timeout=0.1,
+    )
+
+    try:
+        reply = await gemini.generate_reply("session-fallback", [], "hello")
+        assert reply == "reply from Groq fallback"
+        assert groq_client.called is True
+    finally:
+        await gemini.close()
+        await groq.close()
+
