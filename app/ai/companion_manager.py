@@ -438,7 +438,16 @@ class QueueWatchdog:
                     try:
                         await self.send_matched_callback(client_id, envelope)
                     except Exception as exc:
-                        logger.error("Failed to send matched envelope to client %s: %s", client_id, exc)
+                        # Delivery can fail when the socket disconnects after the
+                        # queue ticket was popped. Roll back both registries so the
+                        # client cannot leave behind an unreachable ghost session.
+                        logger.warning("Failed to send matched envelope to client %s; rolling back session %s: %s", client_id, session.session_id, exc)
+                        await self.session_manager.terminate_session(
+                            session.session_id,
+                            reason="disconnected",
+                        )
+                        self.companion_manager.unregister_session(session.session_id)
+                        continue
 
                 paired.append((client_id, session.session_id))
 
