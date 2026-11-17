@@ -48,7 +48,6 @@ class Session(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_a: str
     client_b: str
-    is_ai: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: SessionStatus = SessionStatus.PAIRED
     initiator_id: Optional[str] = None
