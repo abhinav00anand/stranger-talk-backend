@@ -1,4 +1,4 @@
-"""Provider Factory with Singleton Resolution, Environment Config, and Test Overrides."""
+"""Provider Factory with singleton resolution, environment config, and test overrides."""
 
 import logging
 import threading
@@ -17,8 +17,21 @@ _moderation_provider: Optional[BaseModerationProvider] = None
 _lock = threading.Lock()
 
 
+def _configured_groq_provider(api_key: str) -> GroqAICompanionProvider:
+    """Build Groq with the configured model and an offline safety net."""
+    return GroqAICompanionProvider(
+        api_key=api_key.strip(),
+        model=(getattr(settings, "GROQ_MODEL", None) or "openai/gpt-oss-20b").strip(),
+        fallback_provider=MockAICompanionProvider(),
+    )
+
+
 def get_ai_companion_provider() -> BaseAICompanionProvider:
-    """Retrieve singleton AI companion provider, instantiating based on settings if needed."""
+    """Resolve the provider once; in auto mode prefer Gemini, then Groq, then Mock.
+
+    With both API keys configured, Groq is wired as Gemini's runtime fallback.
+    Explicit AI_PROVIDER=mock always disables external providers.
+    """
     global _companion_provider
     if _companion_provider is not None:
         return _companion_provider
@@ -27,64 +40,52 @@ def get_ai_companion_provider() -> BaseAICompanionProvider:
         if _companion_provider is not None:
             return _companion_provider
 
-        provider_name = (getattr(settings, "AI_PROVIDER", "mock") or "mock").strip().lower()
+        provider_name = (getattr(settings, "AI_PROVIDER", "auto") or "auto").strip().lower()
         gemini_key = getattr(settings, "GEMINI_API_KEY", None) or getattr(settings, "GOOGLE_API_KEY", None)
         groq_key = getattr(settings, "GROQ_API_KEY", None)
+        gemini_key = gemini_key.strip() if isinstance(gemini_key, str) and gemini_key.strip() else None
+        groq_key = groq_key.strip() if isinstance(groq_key, str) and groq_key.strip() else None
+
+        if provider_name == "auto":
+            provider_name = "gemini" if gemini_key else "groq" if groq_key else "mock"
 
         if provider_name == "gemini":
-            if gemini_key and gemini_key.strip():
-                fallback_provider = None
-                if groq_key and groq_key.strip():
-                    fallback_provider = GroqAICompanionProvider(
-                        api_key=groq_key.strip(),
-                        model=getattr(settings, "GROQ_MODEL", "llama-3.1-8b-instant"),
-                    )
-                _companion_provider = GeminiAICompanionProvider(
-                    api_key=gemini_key.strip(),
-                    model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"),
-                    fallback_provider=fallback_provider or MockAICompanionProvider(),
-                )
-            else:
-                if groq_key and groq_key.strip():
-                    logger.warning(
-                        "AI_PROVIDER is set to 'gemini' but GEMINI_API_KEY is not configured. "
-                        "Falling back to Groq."
-                    )
-                    _companion_provider = GroqAICompanionProvider(
-                        api_key=groq_key.strip(),
-                        model=getattr(settings, "GROQ_MODEL", "llama-3.1-8b-instant"),
-                    )
+            if not gemini_key:
+                if groq_key:
+                    logger.warning("Gemini selected without a Google API key; using Groq as primary provider.")
+                    _companion_provider = _configured_groq_provider(groq_key)
+                    provider_name = "groq"
                 else:
-                    logger.warning(
-                        "AI_PROVIDER is set to 'gemini' but no Google or Groq API key is configured. "
-                        "Falling back to Mock."
-                    )
+                    logger.warning("Gemini selected but no Google or Groq API key is configured; using Mock.")
                     _companion_provider = MockAICompanionProvider()
+                    provider_name = "mock"
+            else:
+                fallback = _configured_groq_provider(groq_key) if groq_key else MockAICompanionProvider()
+                _companion_provider = GeminiAICompanionProvider(
+                    api_key=gemini_key,
+                    model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"),
+                    fallback_provider=fallback,
+                )
         elif provider_name == "groq":
-            if groq_key and groq_key.strip():
-                _companion_provider = GroqAICompanionProvider(
-                    api_key=groq_key.strip(),
-                    model=getattr(settings, "GROQ_MODEL", "llama-3.1-8b-instant"),
-                )
+            if groq_key:
+                _companion_provider = _configured_groq_provider(groq_key)
             else:
-                logger.warning("AI_PROVIDER is set to 'groq' but GROQ_API_KEY is not configured. Falling back to Mock.")
+                logger.warning("Groq selected but GROQ_API_KEY is not configured; using Mock.")
                 _companion_provider = MockAICompanionProvider()
+                provider_name = "mock"
+        elif provider_name == "mock":
+            _companion_provider = MockAICompanionProvider()
         else:
-            # Handles 'mock' and any unknown/unsupported providers gracefully
-            if groq_key and groq_key.strip() and provider_name not in {"mock", "gemini"}:
-                logger.warning("Unsupported AI provider '%s'; falling back to Groq.", provider_name)
-                _companion_provider = GroqAICompanionProvider(
-                    api_key=groq_key.strip(),
-                    model=getattr(settings, "GROQ_MODEL", "llama-3.1-8b-instant"),
-                )
-            else:
-                _companion_provider = MockAICompanionProvider()
+            logger.error("Unsupported AI_PROVIDER=%r; using Mock.", provider_name)
+            _companion_provider = MockAICompanionProvider()
+            provider_name = "mock"
 
+        logger.info("AI companion provider resolved to %s", provider_name)
         return _companion_provider
 
 
 def get_moderation_provider() -> BaseModerationProvider:
-    """Retrieve singleton moderation provider, instantiating based on settings if needed."""
+    """Retrieve singleton AI moderation provider, instantiating based on settings if needed."""
     global _moderation_provider
     if _moderation_provider is not None:
         return _moderation_provider
@@ -103,8 +104,11 @@ def get_moderation_provider() -> BaseModerationProvider:
                     model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"),
                 )
             else:
-                logger.error("MODERATION_PROVIDER is 'gemini' but GEMINI_API_KEY is unset; moderation will fail closed.")
-                _moderation_provider = GeminiModerationProvider(api_key=None, model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"))
+                logger.error("MODERATION_PROVIDER is 'gemini' but no Google API key is configured; moderation will fail closed.")
+                _moderation_provider = GeminiModerationProvider(
+                    api_key=None,
+                    model=getattr(settings, "GEMINI_MODEL", "gemini-3.8-flash"),
+                )
         else:
             _moderation_provider = MockModerationProvider()
 
