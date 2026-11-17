@@ -120,7 +120,7 @@ async def health_check():
         "service": settings.APP_NAME,
         "environment": settings.APP_ENV,
         "queue_size": matchmaker_queue.queue_size(),
-        "active_sessions": session_manager.active_sessions_count(),
+        "active_sessions": session_manager.active_session_count(),
         "active_connections": len(active_connections),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
