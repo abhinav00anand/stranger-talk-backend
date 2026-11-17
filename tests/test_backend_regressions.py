@@ -70,3 +70,21 @@ async def test_websocket_matches_two_real_clients_without_ai_metadata(make_clien
     assert "peer_is_ai" not in match_b["payload"]
     assert match_a["payload"]["is_initiator"] is True
     assert match_b["payload"]["is_initiator"] is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pairing_never_reuses_a_client():
+    import asyncio
+
+    queue = MatchmakerQueue()
+    for index in range(12):
+        await queue.enqueue(f"concurrent-{index}")
+
+    pairs = await asyncio.gather(*(queue.try_pop_pair() for _ in range(8)))
+    valid_pairs = [pair for pair in pairs if pair is not None]
+    participants = [client_id for pair in valid_pairs for client_id in pair]
+
+    assert len(valid_pairs) == 6
+    assert len(participants) == 12
+    assert len(set(participants)) == 12
+    assert queue.queue_size() == 0
