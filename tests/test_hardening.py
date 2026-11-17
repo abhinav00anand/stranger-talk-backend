@@ -99,3 +99,12 @@ async def test_websocket_returns_protocol_errors_for_invalid_json_and_unknown_ty
     await client.send_envelope("not_a_real_command", payload={})
     unknown = await client.recv_type("error", timeout=3.0)
     assert unknown["payload"]["code"] == "UNKNOWN_MESSAGE_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_reports_core_service_failure(monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main.matchmaker_queue, "queue_size", lambda: (_ for _ in ()).throw(RuntimeError("queue unavailable")))
+    response = await main.health_check()
+    assert response.status_code == 503
