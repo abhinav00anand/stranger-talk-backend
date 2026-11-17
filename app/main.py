@@ -713,7 +713,7 @@ async def websocket_endpoint(websocket: WebSocket):
         session = session_manager.get_session_by_client(client_id)
         if session and session.is_active():
             partner_id = session.get_partner_id(client_id)
-                    await session_manager.terminate_session(session.session_id, reason="disconnected")
+            await session_manager.terminate_session(session.session_id, reason="disconnected")
             if partner_id:
                 disc_env = WebSocketEnvelope.create(
                     msg_type=ServerMessageType.PEER_DISCONNECTED,
