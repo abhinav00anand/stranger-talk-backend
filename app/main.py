@@ -9,6 +9,7 @@ import logging
 from time import monotonic
 import uuid
 
+from pydantic import ValidationError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -95,7 +96,9 @@ async def send_to_client(client_id: str, envelope: WebSocketEnvelope | dict) -> 
 
 async def on_watchdog_matched(client_id: str, envelope: WebSocketEnvelope) -> None:
     """Callback invoked by QueueWatchdog when pairing a client with the AI companion."""
-    await send_to_client(client_id, envelope)
+    delivered = await send_to_client(client_id, envelope)
+    if not delivered:
+        raise RuntimeError("Client disconnected before AI match notification could be delivered")
 
 
 queue_watchdog = QueueWatchdog(
@@ -189,8 +192,18 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
         await send_to_client(client_id, err_env)
         return
 
-    topics = payload_data.get("topics")
-    await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, topics=topics)
+    try:
+        validated = JoinQueuePayload.model_validate(payload_data)
+    except ValidationError:
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_PAYLOAD", "message": "topics must be a list of up to 10 strings (1-40 characters each)"},
+            session_id=None,
+        )
+        await send_to_client(client_id, err_env)
+        return
+
+    await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, topics=validated.topics)
 
     # Send queued confirmation
     queued_env = WebSocketEnvelope.create(

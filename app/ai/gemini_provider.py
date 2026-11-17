@@ -193,7 +193,7 @@ class GeminiModerationProvider(BaseModerationProvider):
         if self._client is None:
             if self.fallback:
                 return await self.fallback.score_toxicity(text)
-            return 0.0
+            raise RuntimeError("Gemini moderation client is unavailable")
 
         try:
             prompt = (
@@ -214,15 +214,11 @@ class GeminiModerationProvider(BaseModerationProvider):
                 score = float(match.group())
                 return max(0.0, min(1.0, score))
 
-            if self.fallback:
-                return await self.fallback.score_toxicity(text)
-            return 0.0
+            raise ValueError("Gemini moderation returned an unparseable score")
 
         except Exception as exc:
-            logger.warning("Gemini moderation failed: %s. Falling back.", exc)
-            if self.fallback:
-                return await self.fallback.score_toxicity(text)
-            return 0.0
+            logger.warning("Gemini moderation failed: %s", exc)
+            raise RuntimeError("Gemini moderation is unavailable") from exc
 
     async def close(self) -> None:
         if self._client:

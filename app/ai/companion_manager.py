@@ -36,7 +36,7 @@ class AISessionState:
     session_id: str
     client_id: str
     companion_id: str = "ai_companion"
-    history: deque[ChatMessagePayload] = field(default_factory=lambda: deque(maxlen=10))
+    history: deque[Any] = field(default_factory=lambda: deque(maxlen=10))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_active: bool = True
     active_task: Optional[asyncio.Task] = None
@@ -248,7 +248,7 @@ class CompanionManager:
             if not sess.is_active or self._sessions.get(session_id) is not sess:
                 return None
 
-            sess.history.append(ChatMessagePayload(text=clean_reply))
+            sess.history.append(ServerChatMessagePayload(sender="peer", text=clean_reply))
             chat_payload = ServerChatMessagePayload(sender=self.peer_alias, text=clean_reply)
             envelope = WebSocketEnvelope.create(
                 msg_type=ServerMessageType.CHAT,
@@ -438,7 +438,16 @@ class QueueWatchdog:
                     try:
                         await self.send_matched_callback(client_id, envelope)
                     except Exception as exc:
-                        logger.error("Failed to send matched envelope to client %s: %s", client_id, exc)
+                        # Delivery can fail when the socket disconnects after the
+                        # queue ticket was popped. Roll back both registries so the
+                        # client cannot leave behind an unreachable ghost session.
+                        logger.warning("Failed to send matched envelope to client %s; rolling back session %s: %s", client_id, session.session_id, exc)
+                        await self.session_manager.terminate_session(
+                            session.session_id,
+                            reason="disconnected",
+                        )
+                        self.companion_manager.unregister_session(session.session_id)
+                        continue
 
                 paired.append((client_id, session.session_id))
 

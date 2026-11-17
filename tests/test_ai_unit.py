@@ -400,15 +400,15 @@ class TestSuite3GeminiProvider:
         assert score == 0.88
 
     @pytest.mark.asyncio
-    async def test_gemini_moderation_provider_error_fail_open(self):
-        """Fails open (0.0) or uses fallback when API call errors."""
+    async def test_gemini_moderation_provider_error_fails_closed(self):
+        """Provider errors must propagate so the moderation pipeline can fail closed."""
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(side_effect=RuntimeError("API Error"))
 
         fallback = MockModerationProvider(default_score=0.0)
         provider = GeminiModerationProvider(client=mock_client, fallback_provider=fallback)
-        score = await provider.score_toxicity("some message")
-        assert score == 0.0
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await provider.score_toxicity("some message")
 
 
 # ============================================================================
