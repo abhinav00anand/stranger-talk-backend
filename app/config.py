@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     ]
 
     # AI Fallback Companion
-    AI_FALLBACK_TIMEOUT_SECONDS: float = 15.0
+    AI_FALLBACK_TIMEOUT_SECONDS: float = 5.0
     AI_PROVIDER: str = "auto"  # "auto" | "mock" | "gemini" | "groq"
     GEMINI_API_KEY: str | None = None
     GOOGLE_API_KEY: str | None = None
