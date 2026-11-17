@@ -19,12 +19,12 @@ class Settings(BaseSettings):
 
     # AI Fallback Companion
     AI_FALLBACK_TIMEOUT_SECONDS: float = 5.0
-    AI_PROVIDER: str = "mock"  # "mock" | "gemini" | "groq"
+    AI_PROVIDER: str = "auto"  # "auto" | "mock" | "gemini" | "groq"
     GEMINI_API_KEY: str | None = None
     GOOGLE_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-3.8-flash"
     GROQ_API_KEY: str | None = None
-    GROQ_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
     OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4o-mini"
 

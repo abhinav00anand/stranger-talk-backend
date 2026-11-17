@@ -13,7 +13,8 @@ from app.models.envelopes import ChatMessagePayload, ServerChatMessagePayload
 logger = logging.getLogger(__name__)
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+RETIRED_GROQ_MODELS = {"llama-3.1-8b-instant", "llama-3.3-70b-versatile"}
 
 
 class GroqAICompanionProvider(BaseAICompanionProvider):
@@ -29,7 +30,15 @@ class GroqAICompanionProvider(BaseAICompanionProvider):
         client: Optional[Any] = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else settings.GROQ_API_KEY
-        self.model = model if model is not None else settings.GROQ_MODEL
+        configured_model = (model or getattr(settings, "GROQ_MODEL", None) or DEFAULT_GROQ_MODEL).strip()
+        if configured_model in RETIRED_GROQ_MODELS:
+            logger.warning(
+                "Configured Groq model %s is retired for developer-tier requests; using %s instead.",
+                configured_model,
+                DEFAULT_GROQ_MODEL,
+            )
+            configured_model = DEFAULT_GROQ_MODEL
+        self.model = configured_model
         self.fallback = fallback_provider or MockAICompanionProvider()
         self.system_instruction = system_instruction or (
             "You are a friendly, casual stranger chatting 1-on-1 on an anonymous text chat website. "
@@ -80,7 +89,7 @@ class GroqAICompanionProvider(BaseAICompanionProvider):
                     "model": self.model,
                     "messages": messages,
                     "temperature": 0.7,
-                    "max_tokens": 256,
+                    "max_completion_tokens": 256,
                 },
             )
             response.raise_for_status()
