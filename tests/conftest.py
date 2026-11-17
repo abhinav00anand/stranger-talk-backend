@@ -306,8 +306,15 @@ def _clear_ip_bans():
 
 @pytest.fixture(autouse=True)
 def cleanup_ip_bans():
-    """Ensure IP ban list is cleared before and after each test for robust cross-suite isolation."""
+    """Clear process-local abuse controls before and after each test."""
     _clear_ip_bans()
+    try:
+        from app.main import ip_rate_limiter
+        ip_rate_limiter._events.clear()
+    except ImportError:
+        raise
     yield
     _clear_ip_bans()
+    from app.main import ip_rate_limiter
+    ip_rate_limiter._events.clear()
 
