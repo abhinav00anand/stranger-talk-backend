@@ -818,3 +818,67 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # Remove from queue if waiting
         await matchmaker_queue.pop_client(client_id)
+
+# -------------------------------------------------
+# Generic WebSocket endpoint for TalkFreely frontend
+# -------------------------------------------------
+
+async def _forward_to_dispatcher(
+    client_id: str,
+    ws: WebSocket,
+    raw: str,
+    client_ip: str,
+) -> None:
+    """Parse a raw JSON envelope from the client and forward to the existing dispatcher.
+
+    The rest of the backend already has a ``handle_message`` coroutine that routes
+    ``type`` values (join_queue, chat, skip, leave, etc.) to the appropriate handlers.
+    This helper decodes the incoming text payload and invokes that dispatcher.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Send a minimal error envelope back to the client
+        err_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_JSON", "message": "Malformed message"},
+            session_id=None,
+        )
+        await send_to_client(client_id, err_env)
+        return
+
+    # Forward to the unified handler (expects the same dict structure as other routes)
+    await handle_message(client_id=client_id, client_ip=client_ip, payload=data, websocket=ws)
+
+
+@app.websocket("/ws")
+async def generic_ws_endpoint(websocket: WebSocket) -> None:
+    """Entry point used by the TalkFreely frontend.
+
+    - Accepts the WebSocket handshake.
+    - Registers the connection in ``active_connections`` so other parts of the app can
+      address the client via ``send_to_client``.
+    - Listens for incoming JSON envelopes and forwards them to the existing
+      ``handle_message`` logic.
+    - Cleans up on disconnect and triggers the normal leave flow.
+    """
+    await websocket.accept()
+
+    # Simple unique identifier for this connection
+    client_id = str(uuid.uuid4())
+    client_ip = websocket.client.host if websocket.client else "unknown"
+
+    # Register the connection for outbound messaging
+    async with connections_lock:
+        active_connections[client_id] = websocket
+
+    try:
+        while True:
+            raw_msg = await websocket.receive_text()
+            await _forward_to_dispatcher(client_id, websocket, raw_msg, client_ip)
+    except WebSocketDisconnect:
+        # Remove from the active list
+        async with connections_lock:
+            active_connections.pop(client_id, None)
+        # Trigger the standard leave handling (will notify any partner)
+        await _handle_leave(client_id, None)
