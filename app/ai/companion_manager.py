@@ -36,7 +36,7 @@ class AISessionState:
     session_id: str
     client_id: str
     companion_id: str = "ai_companion"
-    history: deque[ChatMessagePayload] = field(default_factory=lambda: deque(maxlen=10))
+    history: deque[Any] = field(default_factory=lambda: deque(maxlen=10))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_active: bool = True
     active_task: Optional[asyncio.Task] = None
@@ -210,7 +210,7 @@ class CompanionManager:
         send_fn: Optional[Callable[[str, WebSocketEnvelope], Awaitable[None]]],
     ) -> Optional[str]:
         """Run typing, provider, history, and delivery steps under the session lock."""
-        sess.history.append(ChatMessagePayload(text=clean_text))
+        sess.history.append({"sender": "user", "text": clean_text})
         history_snapshot = list(sess.history)[:-1]
         typing_emitted = False
 
@@ -248,7 +248,7 @@ class CompanionManager:
             if not sess.is_active or self._sessions.get(session_id) is not sess:
                 return None
 
-            sess.history.append(ChatMessagePayload(text=clean_reply))
+            sess.history.append({"sender": "assistant", "text": clean_reply})
             chat_payload = ServerChatMessagePayload(sender=self.peer_alias, text=clean_reply)
             envelope = WebSocketEnvelope.create(
                 msg_type=ServerMessageType.CHAT,

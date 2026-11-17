@@ -63,11 +63,10 @@ def get_moderation_provider() -> BaseModerationProvider:
                 _moderation_provider = GeminiModerationProvider(
                     api_key=gemini_key.strip(),
                     model=getattr(settings, "GEMINI_MODEL", "gemini-2.0-flash"),
-                    fallback_provider=MockModerationProvider(),
                 )
             else:
-                logger.warning("MODERATION_PROVIDER is 'gemini' but GEMINI_API_KEY is unset. Falling back to Mock.")
-                _moderation_provider = MockModerationProvider()
+                logger.error("MODERATION_PROVIDER is 'gemini' but GEMINI_API_KEY is unset; moderation will fail closed.")
+                _moderation_provider = GeminiModerationProvider(api_key=None, model=getattr(settings, "GEMINI_MODEL", "gemini-2.0-flash"))
         else:
             _moderation_provider = MockModerationProvider()
 

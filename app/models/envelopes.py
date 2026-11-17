@@ -51,7 +51,22 @@ class ServerMessageType(str, Enum):
 class JoinQueuePayload(BaseModel):
     """Payload for client join_queue request."""
 
-    topics: Optional[List[str]] = None
+    topics: Optional[List[str]] = Field(default=None, max_length=10)
+
+    @field_validator("topics")
+    @classmethod
+    def validate_topics(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return None
+        cleaned = []
+        for topic in value:
+            if not isinstance(topic, str):
+                raise ValueError("Each topic must be a string")
+            topic = topic.strip()
+            if not topic or len(topic) > 40:
+                raise ValueError("Topics must contain 1 to 40 non-whitespace characters")
+            cleaned.append(topic)
+        return cleaned
 
 
 class SdpPayload(BaseModel):
