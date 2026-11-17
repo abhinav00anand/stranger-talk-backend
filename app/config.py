@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     AI_FALLBACK_TIMEOUT_SECONDS: float = 5.0
     AI_PROVIDER: str = "mock"  # "mock" | "gemini" | "openai"
     GEMINI_API_KEY: str | None = None
+    GOOGLE_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-2.0-flash"
     OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4o-mini"

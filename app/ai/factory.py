@@ -27,7 +27,7 @@ def get_ai_companion_provider() -> BaseAICompanionProvider:
             return _companion_provider
 
         provider_name = (getattr(settings, "AI_PROVIDER", "mock") or "mock").strip().lower()
-        gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+        gemini_key = getattr(settings, "GEMINI_API_KEY", None) or getattr(settings, "GOOGLE_API_KEY", None)
 
         if provider_name == "gemini":
             if gemini_key and gemini_key.strip():
@@ -56,7 +56,7 @@ def get_moderation_provider() -> BaseModerationProvider:
             return _moderation_provider
 
         provider_name = (getattr(settings, "MODERATION_PROVIDER", "mock") or "mock").strip().lower()
-        gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+        gemini_key = getattr(settings, "GEMINI_API_KEY", None) or getattr(settings, "GOOGLE_API_KEY", None)
 
         if provider_name == "gemini":
             if gemini_key and gemini_key.strip():
