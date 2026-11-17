@@ -150,3 +150,14 @@ async def test_gemini_runtime_failure_really_calls_groq_fallback():
         await gemini.close()
         await groq.close()
 
+def test_groq_provider_replaces_retired_model_even_if_set_in_environment(monkeypatch):
+    from app.ai import groq_provider
+
+    monkeypatch.setattr(groq_provider.settings, "GROQ_MODEL", "llama-3.1-8b-instant")
+    provider = GroqAICompanionProvider(api_key="groq-test-key", client=object())
+    try:
+        assert provider.model == "openai/gpt-oss-20b"
+    finally:
+        # object() is only a construction stub and owns no resources.
+        provider._client = None
+
