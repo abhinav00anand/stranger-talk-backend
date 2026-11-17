@@ -125,10 +125,9 @@ class PeerDisconnectedPayload(BaseModel):
 
 
 class MatchedPayload(BaseModel):
-    """Payload emitted when two clients (or a client and AI) are paired."""
+    """Payload emitted when two human clients are paired."""
 
     is_initiator: bool
-    peer_is_ai: bool = False
     peer_alias: str = "Stranger"
     ice_servers: List[Dict[str, Any]] = Field(default_factory=list)
 
