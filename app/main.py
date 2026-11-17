@@ -183,7 +183,7 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
     # Send queued confirmation
     queued_env = WebSocketEnvelope.create(
         msg_type=ServerMessageType.QUEUED,
-        payload=QueuedPayload(position=matchmaker_queue.queue_size(), estimated_wait_seconds=2).model_dump(),
+        payload=QueuedPayload(position=matchmaker_queue.queue_size(), estimated_wait_seconds=None).model_dump(),
         session_id=None,
     )
     await send_to_client(client_id, queued_env)
@@ -231,6 +231,7 @@ async def _pair_waiting_clients() -> None:
                     session_id=session.session_id,
                 ))
             await matchmaker_queue.enqueue(client_id=cid, ip=ip)
+            session_manager.set_client_state(cid, ClientState.QUEUED)
             await send_to_client(cid, WebSocketEnvelope.create(
                 msg_type=ServerMessageType.QUEUED,
                 payload=QueuedPayload(position=matchmaker_queue.queue_size()).model_dump(),
