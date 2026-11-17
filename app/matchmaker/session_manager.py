@@ -43,7 +43,6 @@ class SessionManager:
         self,
         client_a: str,
         client_b: str,
-        is_ai: bool = False,
     ) -> Session:
         """Atomically create a new 1-on-1 session with deterministic initiator assignment.
 
@@ -63,7 +62,6 @@ class SessionManager:
             session = Session(
                 client_a=client_a,
                 client_b=client_b,
-                is_ai=is_ai,
                 initiator_id=client_a,
                 status=SessionStatus.PAIRED,
             )
@@ -76,11 +74,10 @@ class SessionManager:
             self._client_states[client_b] = ClientState.PAIRED
 
             logger.info(
-                "Created session: session_id=%s, client_a=%s, client_b=%s, is_ai=%s",
+                "Created session: session_id=%s, client_a=%s, client_b=%s",
                 session.session_id,
                 client_a,
                 client_b,
-                is_ai,
             )
             return session
 
