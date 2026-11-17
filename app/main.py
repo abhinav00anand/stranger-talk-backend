@@ -165,6 +165,7 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
             payload={"reason": "IP address is banned due to prior policy violation", "ban_duration_seconds": duration},
             session_id=None,
         )
+        session_manager.set_client_state(client_id, ClientState.BANNED)
         await send_to_client(client_id, banned_env)
         async with connections_lock:
             ws = active_connections.get(client_id)
@@ -409,6 +410,7 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
         if partner_id:
             await send_to_client(partner_id, create_partner_banned_envelope(session.session_id))
         await session_manager.terminate_session(session.session_id, reason="banned")
+        session_manager.set_client_state(client_id, ClientState.BANNED)
         async with connections_lock:
             ws = active_connections.get(client_id)
         if ws:
@@ -470,6 +472,7 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
                 partner_env = create_partner_banned_envelope(session.session_id)
                 await send_to_client(partner_id, partner_env)
             await session_manager.terminate_session(session.session_id, reason="banned")
+            session_manager.set_client_state(client_id, ClientState.BANNED)
             async with connections_lock:
                 ws = active_connections.get(client_id)
             if ws:
