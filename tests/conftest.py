@@ -25,14 +25,9 @@ if str(backend_dir) not in sys.path:
 
 
 def get_app():
-    """Dynamically load FastAPI app from app.main, with fallback for standalone test harness."""
-    try:
-        from app.main import app
-        return app
-    except (ImportError, ModuleNotFoundError):
-        from fastapi import FastAPI
-        fallback_app = FastAPI(title="StrangerTalk Fallback App")
-        return fallback_app
+    """Load the real application; import failures must fail the test suite."""
+    from app.main import app
+    return app
 
 
 class AsyncStrangerClient:
