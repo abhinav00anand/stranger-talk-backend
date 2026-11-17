@@ -432,14 +432,14 @@ async def test_session_handle_leave_simultaneous_race(sm):
 
 @pytest.mark.asyncio
 async def test_session_handle_disconnect(sm):
-    """handle_disconnect marks client as DISCONNECTED, terminates session, and sets partner to IDLE."""
+    """Disconnect records the session outcome and releases the disconnected client's state."""
     session = await sm.create_session("user_1", "user_2")
 
     sess, partner_id = await sm.handle_disconnect("user_1")
     assert sess is not None
     assert partner_id == "user_2"
-    assert sess.status == SessionStatus.TERMINATED
-    assert sm.get_client_state("user_1") == ClientState.DISCONNECTED
+    assert sess.status == SessionStatus.DISCONNECTED
+    assert sm.get_client_state("user_1") == ClientState.IDLE
     assert sm.get_client_state("user_2") == ClientState.IDLE
 
     # Redundant disconnect returns (None, None) safely

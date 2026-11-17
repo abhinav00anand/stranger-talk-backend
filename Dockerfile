@@ -18,4 +18,4 @@ COPY app/ ./app/
 EXPOSE 8000
 
 # Run uvicorn with WebSocket ping keepalive configurations
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-max-size", "262144", "--ws-ping-interval", "20", "--ws-ping-timeout", "20"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-*}\" --ws-max-size 262144 --ws-ping-interval 20 --ws-ping-timeout 20"]

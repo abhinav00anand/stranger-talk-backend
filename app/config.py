@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = False
     PORT: int = 8000
+    FORWARDED_ALLOW_IPS: str = "*"
 
     # Matchmaker & WebRTC STUN Configuration
     STUN_SERVERS: list[str] = [

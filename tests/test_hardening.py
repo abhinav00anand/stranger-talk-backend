@@ -62,3 +62,49 @@ async def test_websocket_closes_oversized_frame(stranger_client):
     except Exception:
         pass
     assert stranger_client.close_code == 1009
+
+
+def test_ip_rate_limiter_is_shared_across_connections_and_expires():
+    from app.main import IPRateLimiter
+
+    limiter = IPRateLimiter(limit=2, window_seconds=1.0)
+    assert limiter.allow("203.0.113.1", now=10.0)
+    assert limiter.allow("203.0.113.1", now=10.1)
+    assert not limiter.allow("203.0.113.1", now=10.2)
+    assert limiter.allow("203.0.113.1", now=11.1)
+    assert limiter.allow("203.0.113.2", now=10.2)
+
+
+@pytest.mark.asyncio
+async def test_terminate_session_resets_both_client_states():
+    from app.matchmaker.session_manager import SessionManager
+    from app.models.session import ClientState
+
+    manager = SessionManager()
+    session = await manager.create_session("lifecycle-a", "lifecycle-b")
+    await manager.terminate_session(session.session_id, reason="leaving")
+    assert manager.get_client_state("lifecycle-a") == ClientState.IDLE
+    assert manager.get_client_state("lifecycle-b") == ClientState.IDLE
+    manager.forget_client("lifecycle-a")
+    assert "lifecycle-a" not in manager._client_states
+
+
+@pytest.mark.asyncio
+async def test_websocket_returns_protocol_errors_for_invalid_json_and_unknown_type(make_client):
+    client = await make_client()
+    await client.ws.send("{not-json")
+    invalid = await client.recv_type("error", timeout=3.0)
+    assert invalid["payload"]["code"] == "INVALID_JSON"
+
+    await client.send_envelope("not_a_real_command", payload={})
+    unknown = await client.recv_type("error", timeout=3.0)
+    assert unknown["payload"]["code"] == "UNKNOWN_MESSAGE_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_reports_core_service_failure(monkeypatch):
+    import app.main as main
+
+    monkeypatch.setattr(main.matchmaker_queue, "queue_size", lambda: (_ for _ in ()).throw(RuntimeError("queue unavailable")))
+    response = await main.health_check()
+    assert response.status_code == 503

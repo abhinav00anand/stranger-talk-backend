@@ -12,6 +12,7 @@ import uuid
 from pydantic import ValidationError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.models.envelopes import (
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 class SlidingWindowRateLimiter:
-    """Small per-connection sliding-window limiter for inbound WebSocket frames."""
+    """Sliding-window limiter for inbound frames."""
 
     def __init__(self, limit: int, window_seconds: float) -> None:
         if limit < 1 or window_seconds <= 0:
@@ -60,10 +61,37 @@ class SlidingWindowRateLimiter:
         return True
 
 
+class IPRateLimiter:
+    """Bounded process-local limiter shared across reconnects from one IP."""
+    def __init__(self, limit: int, window_seconds: float, max_keys: int = 10000):
+        self.limit, self.window_seconds, self.max_keys = limit, window_seconds, max_keys
+        self._events: dict[str, deque[float]] = {}
+
+    def allow(self, key: str, now: float | None = None) -> bool:
+        current = monotonic() if now is None else now
+        cutoff = current - self.window_seconds
+        events = self._events.setdefault(key, deque())
+        while events and events[0] <= cutoff:
+            events.popleft()
+        if len(events) >= self.limit:
+            return False
+        events.append(current)
+        if len(self._events) > self.max_keys:
+            for old_key, old_events in list(self._events.items()):
+                while old_events and old_events[0] <= cutoff:
+                    old_events.popleft()
+                if not old_events:
+                    self._events.pop(old_key, None)
+                if len(self._events) <= self.max_keys:
+                    break
+        return True
+
+
 # Global Singletons
 matchmaker_queue = MatchmakerQueue()
 session_manager = SessionManager()
 signaling_relay = SignalingRelay(stun_servers=settings.STUN_SERVERS)
+ip_rate_limiter = IPRateLimiter(settings.WS_RATE_LIMIT_MESSAGES, settings.WS_RATE_LIMIT_WINDOW_SECONDS)
 
 # Active WebSocket connections: client_id -> WebSocket
 active_connections: dict[str, WebSocket] = {}
@@ -115,14 +143,31 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    """Service health check endpoint."""
+    """Check that the core in-process matchmaking components can be queried."""
+    try:
+        queue_size = matchmaker_queue.queue_size()
+        active_sessions = session_manager.active_session_count()
+        active_connection_count = len(active_connections)
+    except Exception:
+        logger.exception("Health check failed while querying core services")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "service": settings.APP_NAME,
+                "environment": settings.APP_ENV,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
     return {
         "status": "healthy",
+        "checks": {"matchmaker": "ok", "session_manager": "ok"},
         "service": settings.APP_NAME,
         "environment": settings.APP_ENV,
-        "queue_size": matchmaker_queue.queue_size(),
-        "active_sessions": session_manager.active_session_count(),
-        "active_connections": len(active_connections),
+        "queue_size": queue_size,
+        "active_sessions": active_sessions,
+        "active_connections": active_connection_count,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -138,6 +183,7 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
             payload={"reason": "IP address is banned due to prior policy violation", "ban_duration_seconds": duration},
             session_id=None,
         )
+        session_manager.set_client_state(client_id, ClientState.BANNED)
         await send_to_client(client_id, banned_env)
         async with connections_lock:
             ws = active_connections.get(client_id)
@@ -179,6 +225,7 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
         return
 
     await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, topics=validated.topics)
+    session_manager.set_client_state(client_id, ClientState.QUEUED)
 
     # Send queued confirmation
     queued_env = WebSocketEnvelope.create(
@@ -244,6 +291,7 @@ async def _handle_leave_queue(client_id: str) -> None:
     """Handle leave_queue cancellation command."""
     popped = await matchmaker_queue.pop_client(client_id)
     if popped:
+        session_manager.set_client_state(client_id, ClientState.IDLE)
         resp = WebSocketEnvelope.create(
             msg_type=ServerMessageType.IDLE,
             payload={"status": "idle", "message": "Left matchmaking queue"},
@@ -380,6 +428,7 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
         if partner_id:
             await send_to_client(partner_id, create_partner_banned_envelope(session.session_id))
         await session_manager.terminate_session(session.session_id, reason="banned")
+        session_manager.set_client_state(client_id, ClientState.BANNED)
         async with connections_lock:
             ws = active_connections.get(client_id)
         if ws:
@@ -441,6 +490,7 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
                 partner_env = create_partner_banned_envelope(session.session_id)
                 await send_to_client(partner_id, partner_env)
             await session_manager.terminate_session(session.session_id, reason="banned")
+            session_manager.set_client_state(client_id, ClientState.BANNED)
             async with connections_lock:
                 ws = active_connections.get(client_id)
             if ws:
@@ -641,31 +691,28 @@ async def websocket_endpoint(websocket: WebSocket):
         active_connections[client_id] = websocket
         connection_ips[client_id] = client_ip
 
-    message_limiter = SlidingWindowRateLimiter(
-        limit=settings.WS_RATE_LIMIT_MESSAGES,
-        window_seconds=settings.WS_RATE_LIMIT_WINDOW_SECONDS,
-    )
-
     try:
         while True:
             raw_text = await websocket.receive_text()
             if len(raw_text.encode("utf-8")) > settings.WS_MAX_MESSAGE_BYTES:
                 await websocket.close(code=1009, reason="Message too large")
                 break
-            if not message_limiter.allow():
+            if not ip_rate_limiter.allow(client_ip):
                 await websocket.close(code=1008, reason="Rate limit exceeded")
                 break
 
             try:
                 data = json.loads(raw_text)
             except (json.JSONDecodeError, TypeError):
+                await send_to_client(client_id, WebSocketEnvelope.create(msg_type=ServerMessageType.ERROR, payload={"code": "INVALID_JSON", "message": "Message must be valid JSON"}, session_id=None))
                 continue
 
             if not isinstance(data, dict):
+                await send_to_client(client_id, WebSocketEnvelope.create(msg_type=ServerMessageType.ERROR, payload={"code": "INVALID_ENVELOPE", "message": "Message envelope must be a JSON object"}, session_id=None))
                 continue
 
             msg_type = data.get("type")
-            payload = data.get("payload") or {}
+            payload = data.get("payload", {})
             if not isinstance(payload, dict):
                 err_env = WebSocketEnvelope.create(
                     msg_type=ServerMessageType.ERROR,
@@ -675,6 +722,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 await send_to_client(client_id, err_env)
                 continue
             session_id = data.get("session_id")
+            if session_id is not None and not isinstance(session_id, str):
+                await send_to_client(client_id, WebSocketEnvelope.create(msg_type=ServerMessageType.ERROR, payload={"code": "INVALID_SESSION", "message": "session_id must be a string or null"}, session_id=None))
+                continue
 
             if msg_type == "join_queue":
                 await _handle_join_queue(client_id, client_ip, payload)
@@ -697,36 +747,22 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "candidate" or msg_type == "ice_candidate":
                 await _handle_ice_candidate(client_id, payload, session_id)
             elif msg_type == "ping":
-                pong_env = WebSocketEnvelope.create(
-                    msg_type=ServerMessageType.PONG,
-                    payload={},
-                    session_id=session_id,
-                )
+                pong_env = WebSocketEnvelope.create(msg_type=ServerMessageType.PONG, payload={}, session_id=session_id)
                 await send_to_client(client_id, pong_env)
+            else:
+                await send_to_client(client_id, WebSocketEnvelope.create(msg_type=ServerMessageType.ERROR, payload={"code": "UNKNOWN_MESSAGE_TYPE", "message": "Unsupported message type"}, session_id=session_id))
 
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except Exception as exc:
         logger.error("Unexpected error in websocket loop for %s: %s", client_id, exc)
     finally:
-        # Cleanly terminate session and notify partner BEFORE removing connection
-        session = session_manager.get_session_by_client(client_id)
-        if session and session.is_active():
-            partner_id = session.get_partner_id(client_id)
-            await session_manager.terminate_session(session.session_id, reason="disconnected")
-            if partner_id:
-                disc_env = WebSocketEnvelope.create(
-                    msg_type=ServerMessageType.PEER_DISCONNECTED,
-                    payload=PeerDisconnectedPayload(reason="disconnected", can_requeue=True).model_dump(),
-                    session_id=session.session_id,
-                )
-                await send_to_client(partner_id, disc_env)
-                session_manager.set_client_state(partner_id, ClientState.IDLE)
-
-        # Cleanup on socket disconnect
+        session, partner_id = await session_manager.handle_disconnect(client_id)
+        if session and partner_id:
+            disc_env = WebSocketEnvelope.create(msg_type=ServerMessageType.PEER_DISCONNECTED, payload=PeerDisconnectedPayload(reason="disconnected", can_requeue=True).model_dump(), session_id=session.session_id)
+            await send_to_client(partner_id, disc_env)
         async with connections_lock:
             active_connections.pop(client_id, None)
             connection_ips.pop(client_id, None)
-
-        # Remove from queue if waiting
         await matchmaker_queue.pop_client(client_id)
+        session_manager.forget_client(client_id)

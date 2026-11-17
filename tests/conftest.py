@@ -25,14 +25,9 @@ if str(backend_dir) not in sys.path:
 
 
 def get_app():
-    """Dynamically load FastAPI app from app.main, with fallback for standalone test harness."""
-    try:
-        from app.main import app
-        return app
-    except (ImportError, ModuleNotFoundError):
-        from fastapi import FastAPI
-        fallback_app = FastAPI(title="StrangerTalk Fallback App")
-        return fallback_app
+    """Load the real application; import failures must fail the test suite."""
+    from app.main import app
+    return app
 
 
 class AsyncStrangerClient:
@@ -311,8 +306,15 @@ def _clear_ip_bans():
 
 @pytest.fixture(autouse=True)
 def cleanup_ip_bans():
-    """Ensure IP ban list is cleared before and after each test for robust cross-suite isolation."""
+    """Clear process-local abuse controls before and after each test."""
     _clear_ip_bans()
+    try:
+        from app.main import ip_rate_limiter
+        ip_rate_limiter._events.clear()
+    except ImportError:
+        raise
     yield
     _clear_ip_bans()
+    from app.main import ip_rate_limiter
+    ip_rate_limiter._events.clear()
 

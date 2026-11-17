@@ -70,3 +70,50 @@ async def test_websocket_matches_two_real_clients_without_ai_metadata(make_clien
     assert "peer_is_ai" not in match_b["payload"]
     assert match_a["payload"]["is_initiator"] is True
     assert match_b["payload"]["is_initiator"] is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pairing_never_reuses_a_client():
+    import asyncio
+
+    queue = MatchmakerQueue()
+    for index in range(12):
+        await queue.enqueue(f"concurrent-{index}")
+
+    pairs = await asyncio.gather(*(queue.try_pop_pair() for _ in range(8)))
+    valid_pairs = [pair for pair in pairs if pair is not None]
+    participants = [client_id for pair in valid_pairs for client_id in pair]
+
+    assert len(valid_pairs) == 6
+    assert len(participants) == 12
+    assert len(set(participants)) == 12
+    assert queue.queue_size() == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_match_delivery_rolls_back_and_requeues_connected_clients(monkeypatch):
+    import app.main as main
+    from app.models.session import ClientState
+
+    queue = MatchmakerQueue()
+    sessions = SessionManager()
+    await queue.enqueue("delivery-a", ip="192.0.2.1")
+    await queue.enqueue("delivery-b", ip="192.0.2.2")
+    monkeypatch.setattr(main, "matchmaker_queue", queue)
+    monkeypatch.setattr(main, "session_manager", sessions)
+    monkeypatch.setattr(main, "active_connections", {"delivery-a": object(), "delivery-b": object()})
+    monkeypatch.setattr(main, "connection_ips", {"delivery-a": "192.0.2.1", "delivery-b": "192.0.2.2"})
+
+    async def fake_send(client_id, envelope):
+        message_type = envelope.type if hasattr(envelope, "type") else envelope.get("type")
+        if message_type == main.ServerMessageType.MATCHED:
+            return client_id == "delivery-a"
+        return True
+
+    monkeypatch.setattr(main, "send_to_client", fake_send)
+    await main._pair_waiting_clients()
+
+    assert queue.queue_size() == 2
+    assert sessions.active_session_count() == 0
+    assert sessions.get_client_state("delivery-a") == ClientState.QUEUED
+    assert sessions.get_client_state("delivery-b") == ClientState.QUEUED
