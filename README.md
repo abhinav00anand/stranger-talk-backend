@@ -59,7 +59,7 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 | Type | Payload Example | Description |
 | :--- | :--- | :--- |
 | `queued` | `{"position": 1, "estimated_wait_seconds": 2}` | Queue status confirmation. |
-| `matched` | `{"is_initiator": true, "peer_is_ai": false, "peer_alias": "Stranger", "ice_servers": [...]}` | Paired with a peer or AI companion. |
+| `matched` | `{"is_initiator": true, "peer_alias": "Stranger", "partner_id": "...", "ice_servers": [...]}` | Paired with another connected human. |
 | `chat` | `{"text": "Hey!", "sender": "peer", "message_id": "..."}` | Inbound text message. |
 | `gif` | `{"url": "...", "width": 400, "height": 300, "sender": "peer"}` | Inbound validated GIF. |
 | `typing` | `{"is_typing": true}` | Partner typing status. |
@@ -91,7 +91,6 @@ py -3.14 -m pytest -q
 - ALLOWED_ORIGINS: optional JSON array of exact browser origins, for example ["https://your-frontend.example"]. When configured, the API applies this allowlist to credentialed CORS and browser WebSocket handshakes.
 - WS_MAX_MESSAGE_BYTES: maximum inbound WebSocket frame size (default 262,144 bytes).
 - WS_RATE_LIMIT_MESSAGES and WS_RATE_LIMIT_WINDOW_SECONDS: per-connection inbound frame budget (defaults to 60 messages per 10 seconds).
-- MODERATION_FAIL_OPEN: defaults to false. If Stage 2 moderation fails, the message is withheld without banning the user. Set true only when availability is intentionally preferred over moderation coverage.
 
 Deployment note: matchmaking queues, sessions, active connections, and IP bans are process-local in-memory state. Run exactly one application process/replica until shared Redis-backed state is implemented. Multiple workers or replicas maintain separate queues and cannot match users connected to different instances.
 
