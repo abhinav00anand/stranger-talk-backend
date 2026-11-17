@@ -29,8 +29,17 @@ class Settings(BaseSettings):
     # Moderation & Ban Policies
     MODERATION_ENABLED: bool = True
     MODERATION_PROVIDER: str = "mock"  # "mock" | "gemini" | "openai"
+    MODERATION_FAIL_OPEN: bool = False
     TOXICITY_THRESHOLD: float = 0.8
     BAN_DURATION_SECONDS: int = 900
+
+    # WebSocket transport and abuse controls
+    WS_MAX_MESSAGE_BYTES: int = 262_144
+    WS_RATE_LIMIT_MESSAGES: int = 60
+    WS_RATE_LIMIT_WINDOW_SECONDS: float = 10.0
+
+    # Optional exact browser-origin allowlist.
+    ALLOWED_ORIGINS: list[str] = []
     ALLOWED_GIF_DOMAINS: list[str] = [
         "giphy.com",
         "*.giphy.com",

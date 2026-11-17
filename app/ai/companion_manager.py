@@ -40,6 +40,8 @@ class AISessionState:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_active: bool = True
     active_task: Optional[asyncio.Task] = None
+    active_tasks: set[asyncio.Task] = field(default_factory=set, repr=False)
+    message_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 class CompanionManager:
@@ -120,8 +122,12 @@ class CompanionManager:
         sess = self._sessions.pop(session_id, None)
         if sess:
             sess.is_active = False
-            if sess.active_task and not sess.active_task.done():
-                sess.active_task.cancel()
+            tasks = set(sess.active_tasks)
+            if sess.active_task is not None:
+                tasks.add(sess.active_task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
             logger.info("Unregistered AI session %s", session_id)
         return sess
 
@@ -168,55 +174,60 @@ class CompanionManager:
         text: str,
         send_envelope_fn: Optional[Callable[[str, WebSocketEnvelope], Awaitable[None]]] = None,
     ) -> Optional[str]:
-        """Execute the full AI message pipeline: typing -> delay -> generate -> send.
-
-        Steps:
-        1. Validate active session.
-        2. Append user message to 10-turn sliding window history.
-        3. Send typing indicator: True.
-        4. Apply typing delay.
-        5. Send typing indicator: False.
-        6. Invoke AI companion provider to generate reply.
-        7. Append companion reply to sliding window history.
-        8. Send chat message envelope to client.
-        """
+        """Process one user turn serially and deliver the companion response."""
         sess = self._sessions.get(session_id)
         if not sess or not sess.is_active:
             logger.warning("Received message for unknown or inactive AI session: %s", session_id)
             return None
-
         if not text or not isinstance(text, str) or not text.strip():
             return None
 
-        clean_text = text.strip()
-        send_fn = send_envelope_fn or self.send_callback
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            sess.active_tasks.add(current_task)
 
-        # Append user turn to sliding window
-        sess.history.append(ChatMessagePayload(text=clean_text))
-
-        # Snapshot history for provider (excluding latest message which is passed directly)
-        history_snapshot = list(sess.history)[:-1]
-
-        typing_emitted = False
         try:
-            # 1. Emit typing indicator: True
+            # Serializing each session preserves conversation order when users send
+            # multiple messages before the previous model response has completed.
+            async with sess.message_lock:
+                if not sess.is_active or self._sessions.get(session_id) is not sess:
+                    return None
+                return await self._process_user_message_locked(
+                    sess=sess,
+                    session_id=session_id,
+                    clean_text=text.strip(),
+                    send_fn=send_envelope_fn or self.send_callback,
+                )
+        finally:
+            if current_task is not None:
+                sess.active_tasks.discard(current_task)
+
+    async def _process_user_message_locked(
+        self,
+        sess: AISessionState,
+        session_id: str,
+        clean_text: str,
+        send_fn: Optional[Callable[[str, WebSocketEnvelope], Awaitable[None]]],
+    ) -> Optional[str]:
+        """Run typing, provider, history, and delivery steps under the session lock."""
+        sess.history.append(ChatMessagePayload(text=clean_text))
+        history_snapshot = list(sess.history)[:-1]
+        typing_emitted = False
+
+        try:
             await self._send_typing_indicator(send_fn, sess.client_id, session_id, is_typing=True)
             typing_emitted = True
 
-            # 2. Typing delay
             delay = self._get_typing_delay()
             if delay > 0:
                 await asyncio.sleep(delay)
 
-            # Check if session was terminated while sleeping
-            if not sess.is_active or session_id not in self._sessions:
+            if not sess.is_active or self._sessions.get(session_id) is not sess:
                 return None
 
-            # 3. Emit typing indicator: False
             await self._send_typing_indicator(send_fn, sess.client_id, session_id, is_typing=False)
             typing_emitted = False
 
-            # 4. Invoke provider
             provider = self._get_provider()
             try:
                 reply = await provider.generate_reply(
@@ -224,27 +235,21 @@ class CompanionManager:
                     history=history_snapshot,
                     latest_message=clean_text,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.warning("AI provider error in session %s: %s (falling back)", session_id, exc)
                 reply = "Hey, sorry about that! My connection hitched. What were you saying?"
 
-            if not reply or not reply.strip():
+            if not isinstance(reply, str) or not reply.strip():
                 reply = "Haha yeah, totally!"
-
             clean_reply = reply.strip()
 
-            # Check again if session was terminated during generation
-            if not sess.is_active or session_id not in self._sessions:
+            if not sess.is_active or self._sessions.get(session_id) is not sess:
                 return None
 
-            # 5. Append AI reply to sliding window
             sess.history.append(ChatMessagePayload(text=clean_reply))
-
-            # 6. Deliver chat envelope
-            chat_payload = ServerChatMessagePayload(
-                sender=self.peer_alias,
-                text=clean_reply,
-            )
+            chat_payload = ServerChatMessagePayload(sender=self.peer_alias, text=clean_reply)
             envelope = WebSocketEnvelope.create(
                 msg_type=ServerMessageType.CHAT,
                 payload=chat_payload,
@@ -252,12 +257,9 @@ class CompanionManager:
             )
             if send_fn:
                 await send_fn(sess.client_id, envelope)
-
             return clean_reply
-
         finally:
-            # Guarantee typing indicator is turned off if an unhandled error occurred
-            if typing_emitted and sess.is_active and session_id in self._sessions:
+            if typing_emitted and sess.is_active and self._sessions.get(session_id) is sess:
                 await self._send_typing_indicator(send_fn, sess.client_id, session_id, is_typing=False)
 
     async def handle_skip(
@@ -328,8 +330,12 @@ class CompanionManager:
         """Reset all active session states."""
         for state in self._sessions.values():
             state.is_active = False
-            if state.active_task and not state.active_task.done():
-                state.active_task.cancel()
+            tasks = set(state.active_tasks)
+            if state.active_task is not None:
+                tasks.add(state.active_task)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
         self._sessions.clear()
 
 

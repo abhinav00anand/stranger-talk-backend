@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import ipaddress
 import logging
+import math
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -39,7 +40,7 @@ class ModerationResult(BaseModel):
     is_flagged: bool = False
     reason: str | None = None
     confidence: float = 0.0
-    action: Literal["allow", "ban"] = "allow"
+    action: Literal["allow", "block", "ban"] = "allow"
     stage: str | None = None
     normalized_text: str | None = None
 
@@ -53,6 +54,11 @@ class ModerationResult(BaseModel):
         """Return True if content violates policy and warrants a ban."""
         return self.is_flagged and self.action == "ban"
 
+    @property
+    def is_blocked(self) -> bool:
+        """Return True when content must be withheld without banning the sender."""
+        return self.is_flagged and self.action == "block"
+
     @classmethod
     def allow(
         cls,
@@ -65,6 +71,24 @@ class ModerationResult(BaseModel):
             reason=None,
             confidence=0.0,
             action="allow",
+            stage=stage,
+            normalized_text=normalized_text,
+        )
+
+    @classmethod
+    def block(
+        cls,
+        reason: str,
+        confidence: float = 0.0,
+        stage: str = "block",
+        normalized_text: str | None = None,
+    ) -> "ModerationResult":
+        """Factory for a blocked message that does not penalize the sender."""
+        return cls(
+            is_flagged=True,
+            reason=reason,
+            confidence=confidence,
+            action="block",
             stage=stage,
             normalized_text=normalized_text,
         )
@@ -189,9 +213,14 @@ class ModerationPipeline:
                         confidence=score,
                         stage="stage2_deep",
                     )
-            except Exception as e:  # noqa: BLE001 - fail open on arbitrary external AI provider errors
-                logger.warning("Stage 2 moderation provider error: %s (failing open)", e)
-                return ModerationResult.allow(stage="stage2_error_fallback")
+            except Exception as e:  # noqa: BLE001 - provider failures must not silently bypass moderation
+                logger.warning("Stage 2 moderation provider error: %s", e)
+                if getattr(settings, "MODERATION_FAIL_OPEN", False):
+                    return ModerationResult.allow(stage="stage2_error_fallback")
+                return ModerationResult.block(
+                    reason="moderation_unavailable",
+                    stage="stage2_error_block",
+                )
 
         normalized = (
             self.normalizer.normalize(text)
@@ -214,7 +243,7 @@ class ModerationPipeline:
             moderate_fn = provider if callable(provider) else None
 
         if moderate_fn is None:
-            return 0.0, False, None
+            raise TypeError("Moderation provider must expose moderate_text() or be callable")
 
         if asyncio.iscoroutinefunction(moderate_fn) or inspect.iscoroutinefunction(moderate_fn):
             result = await moderate_fn(text)
@@ -257,6 +286,11 @@ class ModerationPipeline:
             else:
                 flagged = bool(raw_flagged) if raw_flagged is not None else False
                 score = 1.0 if flagged else 0.0
+        else:
+            raise TypeError("Moderation provider returned an unsupported result type")
+
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise ValueError("Moderation provider returned a score outside the 0.0-1.0 range")
 
         return score, flagged, reason
 

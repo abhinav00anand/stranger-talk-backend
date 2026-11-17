@@ -162,22 +162,20 @@ class TestSuite2MockProvider:
         assert reply == reply.strip()
 
     @pytest.mark.asyncio
-    async def test_mock_companion_no_robotic_assistant_disclaimers(self):
-        """Replies simulate a casual stranger and never sound like a robotic AI."""
+    async def test_mock_companion_keeps_general_replies_casual(self):
+        """General replies stay conversational without pretending to be human."""
         provider = MockAICompanionProvider()
-        test_prompts = [
-            "who are you?",
-            "what can you do?",
-            "help me with code",
-            "are you an ai?",
-        ]
-        for prompt in test_prompts:
+        for prompt in ["what can you do?", "help me with code"]:
             reply = await provider.generate_reply("s1", [], prompt)
             lower_reply = reply.lower()
-            assert "as an ai" not in lower_reply
-            assert "language model" not in lower_reply
             assert "how may i assist" not in lower_reply
-            assert "artificial intelligence" not in lower_reply
+            assert "language model" not in lower_reply
+
+    @pytest.mark.asyncio
+    async def test_mock_companion_is_transparent_about_ai_identity(self):
+        provider = MockAICompanionProvider()
+        reply = await provider.generate_reply("s1", [], "are you an ai?")
+        assert "ai companion" in reply.lower()
 
     @pytest.mark.asyncio
     async def test_mock_companion_greeting_intent(self):
@@ -300,12 +298,13 @@ class TestSuite3GeminiProvider:
         provider = GeminiAICompanionProvider(api_key="dummy_test_key_123")
         assert provider._client is not None
 
-    def test_gemini_companion_system_instruction_persona(self):
-        """System instruction prescribes casual anonymous stranger persona."""
+    def test_gemini_companion_system_instruction_is_transparent(self):
+        """System instruction keeps a casual persona without concealing AI identity."""
         provider = GeminiAICompanionProvider()
         si = provider.system_instruction.lower()
         assert "stranger" in si
-        assert "never state you are an ai" in si or "casual" in si
+        assert "transparent" in si
+        assert "never claim to be human" in si
 
     def test_gemini_companion_history_formatting(self):
         """Converts ChatMessagePayload list and latest message into Content objects."""

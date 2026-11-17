@@ -40,6 +40,8 @@ All WebSocket frames are JSON strings conforming to the standardized envelope:
 
 ### 1. Client-to-Server Envelopes
 
+Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signaling) must include the exact session_id from the latest matched envelope. Messages with a missing or stale session ID are rejected or ignored; clients must not reuse an old ID after skipping or reconnecting.
+
 | Type | Payload | Description |
 | :--- | :--- | :--- |
 | `join_queue` | `{"topics": ["tech", "music"]}` | Enter the matchmaking queue. |
@@ -85,6 +87,15 @@ py -3.14 -m pytest -q
 ```
 
 ---
+
+## Runtime Security Configuration
+
+- ALLOWED_ORIGINS: optional JSON array of exact browser origins, for example ["https://your-frontend.example"]. When configured, the API applies this allowlist to credentialed CORS and browser WebSocket handshakes.
+- WS_MAX_MESSAGE_BYTES: maximum inbound WebSocket frame size (default 262,144 bytes).
+- WS_RATE_LIMIT_MESSAGES and WS_RATE_LIMIT_WINDOW_SECONDS: per-connection inbound frame budget (defaults to 60 messages per 10 seconds).
+- MODERATION_FAIL_OPEN: defaults to false. If Stage 2 moderation fails, the message is withheld without banning the user. Set true only when availability is intentionally preferred over moderation coverage.
+
+Deployment note: matchmaking queues, sessions, active connections, and IP bans are process-local in-memory state. Run a single application process/instance until shared Redis-backed state is implemented; multiple workers or replicas will not share these records.
 
 ## 🚀 Local Development Setup
 

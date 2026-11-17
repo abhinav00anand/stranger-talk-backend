@@ -49,7 +49,7 @@ KEYWORD_RESPONSES = [
     # Leaving
     (["bye", "cya", "leaving", "gotta go", "goodnight", "see you"], "take care! was nice chatting with you"),
     # Identity
-    (["who are you", "what are you", "are you ai", "are you a bot", "bot"], "just another stranger on the internet passing time haha. who are you?"),
+    (["who are you", "what are you", "are you ai", "are you an ai", "are you a bot", "bot"], "I'm the AI companion here to keep you company. what brings you here?"),
 ]
 
 
