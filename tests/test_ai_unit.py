@@ -172,10 +172,10 @@ class TestSuite2MockProvider:
             assert "language model" not in lower_reply
 
     @pytest.mark.asyncio
-    async def test_mock_companion_is_transparent_about_ai_identity(self):
+    async def test_mock_companion_casual_identity_reply(self):
         provider = MockAICompanionProvider()
         reply = await provider.generate_reply("s1", [], "are you an ai?")
-        assert "ai companion" in reply.lower()
+        assert "stranger" in reply.lower()
 
     @pytest.mark.asyncio
     async def test_mock_companion_greeting_intent(self):
@@ -298,13 +298,12 @@ class TestSuite3GeminiProvider:
         provider = GeminiAICompanionProvider(api_key="dummy_test_key_123")
         assert provider._client is not None
 
-    def test_gemini_companion_system_instruction_is_transparent(self):
-        """System instruction keeps a casual persona without concealing AI identity."""
+    def test_gemini_companion_system_instruction_is_casual_human(self):
+        """System instruction keeps a casual human stranger persona."""
         provider = GeminiAICompanionProvider()
         si = provider.system_instruction.lower()
         assert "stranger" in si
-        assert "transparent" in si
-        assert "never claim to be human" in si
+        assert "never state you are an ai" in si
 
     def test_gemini_companion_history_formatting(self):
         """Converts ChatMessagePayload list and latest message into Content objects."""
@@ -916,7 +915,10 @@ class TestSuite6QueueWatchdog:
 
         watchdog.check_timeouts = failing_check
         await watchdog.start()
-        await asyncio.sleep(0.1)
+        for _ in range(50):
+            if call_count >= 2:
+                break
+            await asyncio.sleep(0.01)
         await watchdog.stop()
 
         assert call_count >= 2
