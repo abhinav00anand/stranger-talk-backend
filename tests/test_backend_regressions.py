@@ -1,47 +1,15 @@
-"""Regression tests for AI history, moderation outages, and matchmaking rollback."""
-
-from datetime import datetime, timedelta, timezone
+"""Regression tests for deterministic human-only matchmaking."""
 
 import pytest
 from pydantic import ValidationError
 
-from app.ai.companion_manager import CompanionManager, QueueWatchdog
-from app.ai.gemini_provider import GeminiAICompanionProvider, GeminiModerationProvider
 from app.matchmaker.queue import MatchmakerQueue
 from app.matchmaker.session_manager import SessionManager
 from app.models.envelopes import JoinQueuePayload
 
 
-def test_gemini_history_preserves_assistant_role():
-    provider = GeminiAICompanionProvider(api_key="", client=None)
-    contents = provider._build_contents(
-        [
-            {"sender": "user", "text": "Hey"},
-            {"sender": "assistant", "text": "Hello!"},
-        ],
-        "How are you?",
-    )
-
-    assert [item.role for item in contents] == ["user", "model", "user"]
-    assert contents[0].parts[0].text == "Hey"
-    assert contents[1].parts[0].text == "Hello!"
-    assert contents[2].parts[0].text == "How are you?"
-
-
-@pytest.mark.asyncio
-async def test_gemini_moderation_unavailable_raises_instead_of_allowing():
-    provider = GeminiModerationProvider(api_key="", client=None)
-
-    with pytest.raises(RuntimeError, match="unavailable"):
-        await provider.score_toxicity("a message that needs moderation")
-
-
 def test_join_queue_topics_are_bounded_and_validated():
-    assert JoinQueuePayload.model_validate({"topics": ["music", "technology"]}).topics == [
-        "music",
-        "technology",
-    ]
-
+    assert JoinQueuePayload.model_validate({"topics": ["music", "technology"]}).topics == ["music", "technology"]
     with pytest.raises(ValidationError):
         JoinQueuePayload.model_validate({"topics": "technology"})
     with pytest.raises(ValidationError):
@@ -53,27 +21,52 @@ def test_join_queue_topics_are_bounded_and_validated():
 
 
 @pytest.mark.asyncio
-async def test_watchdog_rolls_back_session_when_match_delivery_fails():
+async def test_queue_pairs_two_distinct_humans_fifo():
     queue = MatchmakerQueue()
+    await queue.enqueue("human-a")
+    await queue.enqueue("human-b")
+    assert await queue.try_pop_pair() == ("human-a", "human-b")
+    assert await queue.try_pop_pair() is None
+    assert queue.queue_size() == 0
+
+
+@pytest.mark.asyncio
+async def test_queue_prefers_shared_topics_then_falls_back_to_fifo():
+    queue = MatchmakerQueue()
+    await queue.enqueue("human-a", topics=["music"])
+    await queue.enqueue("human-b", topics=["coding"])
+    await queue.enqueue("human-c", topics=["MUSIC"])
+    assert await queue.try_pop_pair() == ("human-a", "human-c")
+    assert await queue.try_pop_pair() is None
+    assert queue.queue_size() == 1
+
+
+@pytest.mark.asyncio
+async def test_session_manager_creates_two_distinct_human_participants():
     sessions = SessionManager()
-    companions = CompanionManager(session_manager=sessions, queue=queue)
-    await queue.enqueue("disconnected-client")
-    ticket = await queue.get_ticket("disconnected-client")
-    ticket.queued_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    session = await sessions.create_session("human-a", "human-b")
+    assert session.client_a == "human-a"
+    assert session.client_b == "human-b"
+    assert session.get_partner_id("human-a") == "human-b"
+    assert session.get_partner_id("human-b") == "human-a"
+    assert not hasattr(session, "is_ai")
 
-    async def fail_delivery(_client_id, _envelope):
-        raise RuntimeError("socket is gone")
 
-    watchdog = QueueWatchdog(
-        queue=queue,
-        session_manager=sessions,
-        companion_manager=companions,
-        timeout=0,
-        send_matched_callback=fail_delivery,
-    )
-
-    paired = await watchdog.check_timeouts()
-
-    assert paired == []
-    assert sessions.active_session_count() == 0
-    assert companions.active_sessions_count() == 0
+@pytest.mark.asyncio
+async def test_websocket_matches_two_real_clients_without_ai_metadata(make_client):
+    client_a = await make_client()
+    client_b = await make_client()
+    await client_a.join_queue()
+    queued = await client_a.recv_type("queued", timeout=3.0)
+    assert queued["payload"]["position"] == 1
+    await client_b.join_queue()
+    match_a = await client_a.recv_type("matched", timeout=3.0)
+    match_b = await client_b.recv_type("matched", timeout=3.0)
+    assert match_a["session_id"] == match_b["session_id"]
+    assert isinstance(match_a["payload"]["partner_id"], str)
+    assert isinstance(match_b["payload"]["partner_id"], str)
+    assert match_a["payload"]["partner_id"] != match_b["payload"]["partner_id"]
+    assert "peer_is_ai" not in match_a["payload"]
+    assert "peer_is_ai" not in match_b["payload"]
+    assert match_a["payload"]["is_initiator"] is True
+    assert match_b["payload"]["is_initiator"] is False
