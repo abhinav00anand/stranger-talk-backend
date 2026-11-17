@@ -352,8 +352,6 @@ async def test_t2_f1_empty_queue_no_match(make_client):
     # Ensure no human match message arrives immediately
     with pytest.raises((TimeoutError, asyncio.TimeoutError)):
         msg = await client.recv_type("matched", timeout=1.0)
-        # If matched arrives, it must NOT be an empty human peer
-        assert msg.get("payload", {}).get("peer_is_ai") is True
 
 
 @pytest.mark.asyncio
