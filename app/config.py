@@ -17,22 +17,8 @@ class Settings(BaseSettings):
         "stun:stun1.l.google.com:19302",
     ]
 
-    # AI Fallback Companion
-    AI_FALLBACK_TIMEOUT_SECONDS: float = 5.0
-    AI_PROVIDER: str = "auto"  # "auto" | "mock" | "gemini" | "groq"
-    GEMINI_API_KEY: str | None = None
-    GOOGLE_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-3.8-flash"
-    GROQ_API_KEY: str | None = None
-    GROQ_MODEL: str = "openai/gpt-oss-20b"
-    OPENAI_API_KEY: str | None = None
-    OPENAI_MODEL: str = "gpt-4o-mini"
-
     # Moderation & Ban Policies
     MODERATION_ENABLED: bool = True
-    MODERATION_PROVIDER: str = "mock"  # "mock" | "gemini" | "openai"
-    MODERATION_FAIL_OPEN: bool = False
-    TOXICITY_THRESHOLD: float = 0.8
     BAN_DURATION_SECONDS: int = 900
 
     # WebSocket transport and abuse controls
