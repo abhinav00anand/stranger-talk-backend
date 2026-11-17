@@ -234,6 +234,7 @@ class SessionManager:
 
             session = self._sessions.get(session_id)
             if not session or not session.is_active():
+                self._client_states.pop(client_id, None)
                 return None, None
 
             partner_id = session.get_partner_id(client_id)
