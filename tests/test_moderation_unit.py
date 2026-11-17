@@ -104,7 +104,7 @@ def test_moderation_result_ban_factory():
 
 def test_moderation_result_serialization():
     """ModerationResult cleanly serializes to dict and JSON."""
-    res = ModerationResult.ban(reason="violent_threat", confidence=0.95, stage="stage2_deep")
+    res = ModerationResult.ban(reason="violent_threat", confidence=0.95, stage="stage1_fastpath")
     data = res.model_dump()
     assert data["is_flagged"] is True
     assert data["reason"] == "violent_threat"
@@ -325,7 +325,7 @@ def test_normalizer_redos_resilience():
 
 
 # ============================================================================
-# 3. ModerationPipeline Stage 2 Deep AI Moderation Tests
+# 3. Local deterministic text moderation tests
 # ============================================================================
 
 @pytest.mark.asyncio
