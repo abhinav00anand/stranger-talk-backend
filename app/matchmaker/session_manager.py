@@ -107,6 +107,11 @@ class SessionManager:
         """Update client state directly (e.g. QUEUED, BANNED, IDLE)."""
         self._client_states[client_id] = state
 
+    def forget_client(self, client_id: str) -> None:
+        """Remove disconnected clients from lifecycle state storage."""
+        self._client_states.pop(client_id, None)
+        self._client_to_session.pop(client_id, None)
+
     def active_session_count(self) -> int:
         """Return the number of currently active sessions."""
         return len(self._sessions)
@@ -221,10 +226,10 @@ class SessionManager:
     ) -> Tuple[Optional[Session], Optional[str]]:
         """Clean up disconnected client, terminate active session, and set state to DISCONNECTED."""
         async with self._lock:
-            self._client_states[client_id] = ClientState.DISCONNECTED
             session_id = self._client_to_session.pop(client_id, None)
 
             if not session_id:
+                self._client_states.pop(client_id, None)
                 return None, None
 
             session = self._sessions.get(session_id)
@@ -232,7 +237,8 @@ class SessionManager:
                 return None, None
 
             partner_id = session.get_partner_id(client_id)
-            session.status = SessionStatus.TERMINATED
+            session.status = SessionStatus.DISCONNECTED
+            self._client_states.pop(client_id, None)
 
             if partner_id:
                 self._client_to_session.pop(partner_id, None)
@@ -275,6 +281,8 @@ class SessionManager:
             self._client_to_session.pop(session.client_b, None)
 
             self._sessions.pop(session_id, None)
+            self._client_states[session.client_a] = ClientState.IDLE
+            self._client_states[session.client_b] = ClientState.IDLE
             self._record_terminated(session)
 
             logger.info(
