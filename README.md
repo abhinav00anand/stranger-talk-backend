@@ -12,7 +12,7 @@ Real-time anonymous stranger chat and live WebRTC audio calling service inspired
 - **Local Content Moderation & Enforcement**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
   - Explicit direct threats and repeated blocked messages end the offending connection with a clear `banned` event. This connection-scoped action does not issue a new IP ban, avoiding collateral bans on shared networks.
-  - Users can report or block the current stranger; reports are rate-limited, persisted, and do not automatically ban the reported person.
+  - Users can report or block the current stranger; reports are rate-limited, stored in a RAM-backed SQLite database, and do not automatically ban the reported person.
 
 ---
 
@@ -91,11 +91,13 @@ py -3.14 -m pytest -q
 
 ## Safety Reports and GIPHY GIF Search
 
-- `REPORTS_DB_PATH`: SQLite report database path. For Railway, attach a persistent volume mounted at `/data` and set this to `/data/talkfreely_reports.sqlite3`. Without a persistent volume, reports can be lost when the container is replaced.
+- `REPORTS_DB_PATH`: SQLite report database path. **Default: `/dev/shm/talkfreely_reports.sqlite3`**, which uses Linux `tmpfs` (RAM-backed temporary storage). No Railway volume is required.
 - `REPORT_RETENTION_DAYS`: report retention window (default 90 days; expired reports are pruned during startup and report access/submission).
 - `REPORTS_ADMIN_TOKEN`: set a long random secret to enable `GET /admin/reports`; pass it in the `X-Admin-Token` header. Never put this token in the frontend.
 - `NEXT_PUBLIC_GIPHY_API_KEY`: configure this in the **frontend/Vercel** deployment, not the backend. GIPHY requires Search API requests to originate in the browser, so this is a public, rate-limited client key—not a secret. See the frontend README for setup instructions.
 - GIPHY search results use the PG rating. The browser sends the selected URL to this backend, which enforces HTTPS and the `giphy.com` domain allowlist before relaying the media. Tenor's API was decommissioned on June 30, 2026, so the product uses GIPHY rather than a non-working Tenor integration.
+
+**Storage trade-off:** report records exist only for the lifetime of the Railway container. They are lost when the service restarts, redeploys, or is replaced. This is intentional for the RAM-only configuration. The default path is a Linux `/dev/shm` tmpfs; if that directory is unavailable or not writable in the deployment, report storage initialization fails closed and report submissions/admin reads remain unavailable rather than silently falling back to disk.
 
 Reports contain the selected reason, optional details, the optional message excerpt the reporter chooses to submit, the session ID, and temporary random connection IDs. Reports do not automatically ban the reported person. Block lists apply only while both anonymous WebSocket connections remain alive; a reconnect creates a new anonymous connection identity.
 
