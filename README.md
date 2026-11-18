@@ -89,12 +89,12 @@ py -3.14 -m pytest -q
 
 ---
 
-## Safety Reports and Tenor GIF Search
+## Safety Reports and GIPHY GIF Search
 
 - `REPORTS_DB_PATH`: SQLite report database path. For Railway, attach a persistent volume mounted at `/data` and set this to `/data/talkfreely_reports.sqlite3`. Without a persistent volume, reports can be lost when the container is replaced.
 - `REPORT_RETENTION_DAYS`: report retention window (default 90 days; expired reports are pruned during startup and report access/submission).
 - `REPORTS_ADMIN_TOKEN`: set a long random secret to enable `GET /admin/reports`; pass it in the `X-Admin-Token` header. Never put this token in the frontend.
-- `TENOR_API_KEY`: an existing Tenor API key. The key is used only by the backend proxy at `GET /api/gifs/search?q=...`; the frontend never receives it. Tenor's developer documentation says new API clients have not been accepted since January 2026, so an existing key is required.
+- `NEXT_PUBLIC_GIPHY_API_KEY`: an existing Tenor API key. The key is used only by the backend proxy at `GET /api/gifs/search?q=...`; the frontend never receives it. Tenor's developer documentation says new API clients have not been accepted since January 2026, so an existing key is required.
 - `TENOR_CLIENT_KEY`: optional Tenor integration identifier (default `talkfreely_web`). GIF results use Tenor's `contentfilter=high` and are URL-validated again before being relayed.
 
 Reports contain the selected reason, optional details, the optional message excerpt the reporter chooses to submit, the session ID, and temporary random connection IDs. Reports do not automatically ban the reported person. Block lists apply only while both anonymous WebSocket connections remain alive; a reconnect creates a new anonymous connection identity.
