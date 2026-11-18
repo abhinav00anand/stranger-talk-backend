@@ -1,5 +1,6 @@
 """Application configuration and environment settings."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
 
     # WebSocket transport and abuse controls
     WS_MAX_MESSAGE_BYTES: int = 262_144
+
+    # Safety reports are stored in SQLite. On Railway, mount a persistent volume
+    # at /data and set REPORTS_DB_PATH=/data/talkfreely_reports.sqlite3.
+    REPORTS_DB_PATH: str = "./data/talkfreely_reports.sqlite3"
+    REPORT_RETENTION_DAYS: int = 90
+    REPORTS_ADMIN_TOKEN: str | None = None
     WS_RATE_LIMIT_MESSAGES: int = 60
     WS_RATE_LIMIT_WINDOW_SECONDS: float = 10.0
 
@@ -39,6 +46,13 @@ class Settings(BaseSettings):
         "media.tenor.com",
         "c.tenor.com",
     ]
+
+    @model_validator(mode="after")
+    def moderation_must_remain_enabled_in_production(self):
+        """Prevent an accidental environment toggle from disabling safety checks."""
+        if self.APP_ENV.lower() in {"production", "prod"} and not self.MODERATION_ENABLED:
+            raise ValueError("MODERATION_ENABLED cannot be false in production")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

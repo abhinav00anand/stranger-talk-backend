@@ -99,6 +99,14 @@ _COMBINING_MARKS_RE = re.compile(
 )
 _MULTI_NON_WORD_RE = re.compile(r"[\W_]{2,}")
 _MULTI_WHITESPACE_RE = re.compile(r"\s+")
+_REPORTING_CONTEXT_RE = re.compile(
+    r"^(?:someone|somebody|a stranger|my friend|my partner|he|she|they)"
+    r"[\W_]+(?:told me to|said)[\W_]+"
+    r"(?:kys|kill yourself|hang yourself|slit your wrists|commit suicide|drink bleach)\b|"
+    r"^i[\W_]+was[\W_]+(?:told|messaged|sent)[\W_]+"
+    r"(?:to[\W_]+)?(?:kys|kill yourself|hang yourself|slit your wrists|commit suicide|drink bleach)\b",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Canonical Toxic Regex Patterns (ReDoS safe with negative lookarounds)
@@ -119,15 +127,16 @@ TOXIC_PATTERNS = [
             re.IGNORECASE,
         ),
     ),
-    # 2. Violent Threats & Direct Harm
+    # 2. Explicitly directed violent threats only.
     (
         "violent_threat",
         re.compile(
             r"(?<![a-z])(?:"
-            r"hunt[\W_]+(?:you|u)[\W_]+down(?:[\W_]+and[\W_]+kill[\W_]+(?:you|u))?|"
-            r"(?:kill|murder|slaughter|shoot|stab|choke|strangle)[\W_]+(?:you|u)(?![a-z])|"
+            r"(?:i|im|i[\W_]+m|we)[\W_]+(?:will|gonna|am[\W_]+going[\W_]+to|are[\W_]+going[\W_]+to|is[\W_]+going[\W_]+to)[\W_]+"
+            r"(?:hunt[\W_]+(?:you|u)[\W_]+down(?:[\W_]+and[\W_]+kill[\W_]+(?:you|u))?|"
+            r"(?:kill|murder|slaughter|shoot|stab|choke|strangle)[\W_]+(?:you|u)|"
             r"(?:slit|cut)[\W_]+(?:your|ur)[\W_]+throat|"
-            r"(?:dox|doxx|ddos)[\W_]+(?:you|u)"
+            r"(?:dox|doxx|ddos)[\W_]+(?:you|u))"
             r")(?![a-z])",
             re.IGNORECASE,
         ),
@@ -222,6 +231,10 @@ class TextNormalizer:
 
         normalized = cls.normalize(text)
         if not normalized:
+            return False, None
+
+        # Reporting received abuse is not itself a policy violation.
+        if _REPORTING_CONTEXT_RE.search(normalized):
             return False, None
 
         for category, pattern in TOXIC_PATTERNS:

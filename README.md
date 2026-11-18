@@ -8,10 +8,11 @@ Real-time anonymous stranger chat and live WebRTC audio calling service inspired
 
 - **Live 1-on-1 WebRTC Voice Signaling**: Peer-to-peer audio streaming using Google public STUN (`stun:stun.l.google.com:19302`) with deterministic initiator assignment for glare-free SDP negotiation.
 - **Dynamic Matchmaking Engine**: FIFO pairing queue with topic matching, instant skip re-queueing, and graceful leave disconnects.
-- **In-Session Messaging & GIF Validation**: Real-time text messaging with typing indicators (`is_typing`), and strict HTTPS validation for trusted GIF providers (Giphy, Tenor).
-- **Local Content Moderation & Auto-Ban**:
+- **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and support for client-selected GIPHY GIFs. Every GIF URL is validated server-side before relay.
+- **Local Content Moderation & Enforcement**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
-  - *Gatekeeper*: Instant WebSocket termination (`CloseCode 1008`) and IP ban persistence. Innocent partners are shielded and given one-click re-queue.
+  - Explicit direct threats and repeated blocked messages end the offending connection with a clear `banned` event. This connection-scoped action does not issue a new IP ban, avoiding collateral bans on shared networks.
+  - Users can report or block the current stranger; reports are rate-limited, persisted, and do not automatically ban the reported person.
 
 ---
 
@@ -52,6 +53,8 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 | `offer` | `{"sdp": "...", "type": "offer"}` | Relay WebRTC SDP Offer to peer. |
 | `answer` | `{"sdp": "...", "type": "answer"}` | Relay WebRTC SDP Answer to initiator. |
 | `candidate` | `{"candidate": "...", "sdpMid": "0", "sdpMLineIndex": 0}` | Relay Trickle ICE Candidate. |
+| `report` | `{"category":"harassment","details":"...","message_excerpt":"..." }` | Submit a report for the current peer. The server derives the reported participant from the active session; reporting also blocks that pair for the current live connections. |
+| `block` | `{}` | End the current chat, block the peer for the lifetime of both live connections, and requeue you. |
 | `ping` | `{}` | Application-level heartbeat ping. |
 
 ### 2. Server-to-Client Envelopes
@@ -85,6 +88,16 @@ py -3.14 -m pytest -q
 ```
 
 ---
+
+## Safety Reports and GIPHY GIF Search
+
+- `REPORTS_DB_PATH`: SQLite report database path. For Railway, attach a persistent volume mounted at `/data` and set this to `/data/talkfreely_reports.sqlite3`. Without a persistent volume, reports can be lost when the container is replaced.
+- `REPORT_RETENTION_DAYS`: report retention window (default 90 days; expired reports are pruned during startup and report access/submission).
+- `REPORTS_ADMIN_TOKEN`: set a long random secret to enable `GET /admin/reports`; pass it in the `X-Admin-Token` header. Never put this token in the frontend.
+- `NEXT_PUBLIC_GIPHY_API_KEY`: configure this in the **frontend/Vercel** deployment, not the backend. GIPHY requires Search API requests to originate in the browser, so this is a public, rate-limited client key—not a secret. See the frontend README for setup instructions.
+- GIPHY search results use the PG rating. The browser sends the selected URL to this backend, which enforces HTTPS and the `giphy.com` domain allowlist before relaying the media. Tenor's API was decommissioned on June 30, 2026, so the product uses GIPHY rather than a non-working Tenor integration.
+
+Reports contain the selected reason, optional details, the optional message excerpt the reporter chooses to submit, the session ID, and temporary random connection IDs. Reports do not automatically ban the reported person. Block lists apply only while both anonymous WebSocket connections remain alive; a reconnect creates a new anonymous connection identity.
 
 ## Runtime Security Configuration
 

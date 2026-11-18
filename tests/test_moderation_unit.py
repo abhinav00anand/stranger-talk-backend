@@ -41,7 +41,8 @@ import asyncio
 import time
 
 import pytest
-from app.config import settings
+from app.config import Settings, settings
+from pydantic import ValidationError
 from app.models.envelopes import WebSocketEnvelope
 from app.models.session import BanRecord
 from app.moderation import (
@@ -158,9 +159,9 @@ def test_normalizer_toxic_violent_threats():
         "I will hunt you down and kill you",
         "i will murder you",
         "im gonna slaughter you",
-        "slit your throat",
+        "I will slit your throat",
         "i will doxx you",
-        "kill you right now",
+        "I will kill you right now",
     ]
     for p in phrases:
         is_toxic, reason = TextNormalizer.check_toxic(p)
@@ -292,6 +293,27 @@ def test_normalizer_empty_and_invalid_inputs():
     assert TextNormalizer.check_toxic(None) == (False, None)  # type: ignore
 
 
+
+def test_normalizer_does_not_flag_reports_or_discussion_as_threats():
+    """Reporting abuse and discussing violence should not trigger a direct-threat rule."""
+    benign_contexts = [
+        "Someone said kill yourself to me yesterday.",
+        "My friend told me to kill myself.",
+        "I was told to hang yourself by a stranger.",
+        "The news said someone threatened to kill you.",
+        "Violence is wrong and people should not threaten others.",
+    ]
+    for message in benign_contexts:
+        assert TextNormalizer.check_toxic(message) == (False, None)
+
+
+def test_normalizer_requires_direct_intent_for_violent_threats():
+    """A bare phrase is not treated as a credible direct threat."""
+    assert TextNormalizer.check_toxic("The phrase kill you appears in this article.") == (False, None)
+    assert TextNormalizer.check_toxic("He will kill you") == (False, None)
+    assert TextNormalizer.check_toxic("I will kill you") == (True, "violent_threat")
+    assert TextNormalizer.check_toxic("Someone said I will kill you") == (True, "violent_threat")
+
 def test_normalizer_latency_under_1ms():
     """Single normalization check executes well under 1ms (sub-millisecond benchmark)."""
     sample = "Hello there my friend, this is a normal conversational text message checking speed."
@@ -335,9 +357,14 @@ async def test_local_text_moderation_uses_fastpath_only():
     assert clean.is_clean
     assert clean.stage == "stage1_clean"
 
-    flagged = await pipeline.moderate_text("kys kill yourself")
-    assert flagged.is_bannable
-    assert flagged.stage == "stage1_fastpath"
+    blocked = await pipeline.moderate_text("kys kill yourself")
+    assert blocked.is_blocked
+    assert blocked.action == "block"
+
+    severe = await pipeline.moderate_text("I will kill you")
+    assert severe.is_bannable
+    assert severe.action == "ban"
+    assert severe.stage == "stage1_fastpath"
 
 
 async def test_stage2_moderation_disabled_setting():
@@ -347,6 +374,15 @@ async def test_stage2_moderation_disabled_setting():
     assert res.is_flagged is False
     assert res.action == "allow"
     assert res.stage == "moderation_disabled"
+
+
+def test_production_cannot_disable_moderation():
+    """A production config with moderation disabled must fail at startup."""
+    with pytest.raises(ValidationError):
+        Settings(APP_ENV="production", MODERATION_ENABLED=False)
+
+    # Tests and local development can still explicitly disable moderation.
+    assert Settings(APP_ENV="test", MODERATION_ENABLED=False).MODERATION_ENABLED is False
 
 
 # ============================================================================
@@ -766,8 +802,8 @@ async def test_concurrent_text_moderation():
             assert res.is_clean is True
             assert res.action == "allow"
         else:
-            assert res.is_bannable is True
-            assert res.action == "ban"
+            assert res.is_blocked is True
+            assert res.action == "block"
 
 
 def test_concurrent_gif_moderation():

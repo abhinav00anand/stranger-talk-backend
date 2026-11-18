@@ -1,8 +1,8 @@
 """Automated Moderation & Ban System Tests (Tier 1 & Tier 2).
 
 Covers:
-- F8: Two-Stage Moderation Pipeline (Fast-Path Normalizer & AI Classifier)
-- Instant Socket Termination (Code 1008)
+- F8: Local deterministic moderation pipeline
+- Connection termination for explicit direct threats
 - Innocent Partner Notification ("banned")
 - IP Ban Store, TTL Expiration & Gatekeeper
 """
@@ -65,18 +65,18 @@ async def test_t1_f8_toxic_message_blocked(make_client):
 
 
 @pytest.mark.asyncio
-async def test_t1_f8_violator_receives_banned_event(make_client):
-    """Violating client receives a banned event envelope with reason and duration."""
+async def test_t1_f8_direct_threat_ends_current_chat_without_ip_ban(make_client):
+    """An explicit direct threat ends the session but does not ban a shared IP."""
     client_a, client_b = await _pair_two_clients(make_client)
 
-    toxic_message = "I will hunt you down and kill you"
-    await client_a.send_chat(toxic_message)
+    await client_a.send_chat("I will hunt you down and kill you")
 
     msg = await client_a.recv_type("banned", timeout=3.0)
-    assert msg["type"] == "banned"
-    payload = msg.get("payload", {})
-    assert "reason" in payload
-    assert "ban_duration_seconds" in payload
+    assert msg["payload"]["ban_scope"] == "connection"
+    assert "Terms & Conditions" in msg["payload"]["reason"]
+    assert msg["payload"]["appeal_email"] == "indrohelpdesk@gmail.com"
+    partner = await client_b.recv_type("peer_disconnected", timeout=3.0)
+    assert partner["payload"]["reason"] == "banned"
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_t1_f8_violator_socket_closed_1008(make_client):
     """Violating client's WebSocket connection is terminated with status code 1008 (Policy Violation)."""
     client_a, client_b = await _pair_two_clients(make_client)
 
-    toxic_message = "kill yourself right now"
+    toxic_message = "I will kill you"
     await client_a.send_chat(toxic_message)
 
     # Violator socket should close with code 1008
@@ -102,10 +102,10 @@ async def test_t1_f8_innocent_partner_notified_banned(make_client):
     """Innocent partner receives peer_disconnected event with reason: 'banned'."""
     client_a, client_b = await _pair_two_clients(make_client)
 
-    toxic_message = "toxic abuse violation message"
+    toxic_message = "I will murder you"
     await client_a.send_chat(toxic_message)
 
-    # Client B receives peer_disconnected with reason banned
+    # A direct threat ends the session; the innocent partner can requeue.
     msg = await client_b.recv_type("peer_disconnected", timeout=5.0)
     assert msg["type"] == "peer_disconnected"
     payload = msg.get("payload", {})
@@ -130,13 +130,10 @@ async def test_t2_f8_leetspeak_normalization_catches_slur(make_client):
     drained = await client_b.drain(timeout=0.5)
     assert not any(m.get("type") == "chat" for m in drained)
 
-    # Violator receives banned event or socket closed with 1008
-    try:
-        msg = await client_a.recv_type("banned", timeout=3.0)
-        assert msg["type"] == "banned"
-    except Exception:
-        await client_a.drain(timeout=0.5)
-        assert client_a.close_code in (1008, 4403)
+    # A non-severe abusive message is blocked without disconnecting the sender.
+    msg = await client_a.recv_type("error", timeout=3.0)
+    assert msg["payload"]["code"] == "MESSAGE_BLOCKED"
+    assert client_a.close_code is None
 
 
 @pytest.mark.asyncio
@@ -152,13 +149,10 @@ async def test_t2_f8_unicode_homoglyph_normalization(make_client):
     drained = await client_b.drain(timeout=0.5)
     assert not any(m.get("type") == "chat" for m in drained)
 
-    # Violator receives banned event or socket closed with 1008
-    try:
-        msg = await client_a.recv_type("banned", timeout=3.0)
-        assert msg["type"] == "banned"
-    except Exception:
-        await client_a.drain(timeout=0.5)
-        assert client_a.close_code in (1008, 4403)
+    # A non-severe abusive message is blocked without disconnecting the sender.
+    msg = await client_a.recv_type("error", timeout=3.0)
+    assert msg["payload"]["code"] == "MESSAGE_BLOCKED"
+    assert client_a.close_code is None
 
 
 @pytest.mark.asyncio
@@ -227,22 +221,41 @@ async def test_t2_f8_ban_duration_ttl_expiration():
 
 @pytest.mark.asyncio
 async def test_t2_f8_partner_not_banned_on_peer_violation(make_client):
-    """Innocent partner is not banned when their peer violates policy and can immediately re-queue."""
+    """The innocent partner remains connected and can requeue after a direct threat."""
     client_a, client_b = await _pair_two_clients(make_client)
 
-    # Client A commits violation
-    await client_a.send_chat("kill yourself right now")
-
-    # Client B receives peer_disconnected
+    await client_a.send_chat("I will kill you")
     await client_b.recv_type("peer_disconnected", timeout=5.0)
 
-    # Client B's socket must remain healthy (not closed with 1008)
     assert client_b.close_code != 1008
-
-    # Client B can immediately rejoin matchmaking queue (lift ban for localhost in local test environment)
-    from app.moderation.ban_manager import ban_manager
-    ban_manager.lift_ban("127.0.0.1")
-
     await client_b.join_queue()
     msg = await client_b.recv_type("queued", timeout=3.0)
     assert msg["type"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_repeated_blocked_messages_end_only_the_offending_connection(make_client):
+    """Three blocked messages end the sender's current session without an IP ban."""
+    client_a, client_b = await _pair_two_clients(make_client)
+
+    for _ in range(2):
+        await client_a.send_chat("kys")
+        blocked = await client_a.recv_type("error", timeout=3.0)
+        assert blocked["payload"]["code"] == "MESSAGE_BLOCKED"
+        assert client_a.close_code is None
+
+    await client_a.send_chat("kys")
+    escalated = await client_a.recv_type("banned", timeout=3.0)
+    assert escalated["payload"]["ban_scope"] == "connection"
+    assert escalated["payload"]["appeal_email"] == "indrohelpdesk@gmail.com"
+
+    disconnected = await client_b.recv_type("peer_disconnected", timeout=3.0)
+    assert disconnected["payload"]["reason"] == "banned"
+    assert disconnected["payload"]["can_requeue"] is True
+
+    try:
+        while True:
+            await client_a.recv_json(timeout=2.0)
+    except (websockets.exceptions.ConnectionClosed, Exception):
+        pass
+    assert client_a.close_code == 1008
