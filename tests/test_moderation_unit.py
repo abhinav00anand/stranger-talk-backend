@@ -790,8 +790,8 @@ async def test_concurrent_text_moderation():
             assert res.is_clean is True
             assert res.action == "allow"
         else:
-            assert res.is_bannable is True
-            assert res.action == "ban"
+            assert res.is_blocked is True
+            assert res.action == "block"
 
 
 def test_concurrent_gif_moderation():
