@@ -41,7 +41,8 @@ import asyncio
 import time
 
 import pytest
-from app.config import settings
+from app.config import Settings, settings
+from pydantic import ValidationError
 from app.models.envelopes import WebSocketEnvelope
 from app.models.session import BanRecord
 from app.moderation import (
@@ -373,6 +374,15 @@ async def test_stage2_moderation_disabled_setting():
     assert res.is_flagged is False
     assert res.action == "allow"
     assert res.stage == "moderation_disabled"
+
+
+def test_production_cannot_disable_moderation():
+    """A production config with moderation disabled must fail at startup."""
+    with pytest.raises(ValidationError):
+        Settings(APP_ENV="production", MODERATION_ENABLED=False)
+
+    # Tests and local development can still explicitly disable moderation.
+    assert Settings(APP_ENV="test", MODERATION_ENABLED=False).MODERATION_ENABLED is False
 
 
 # ============================================================================
