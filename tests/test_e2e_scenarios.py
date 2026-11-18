@@ -129,82 +129,48 @@ async def test_t4_multi_user_stranger_chat_traffic(make_client):
 
 
 @pytest.mark.asyncio
-async def test_t4_bad_actor_swift_banishment_journey(make_client, server_ws_url):
-    """End-to-end security journey. Malicious user tries spamming slurs and bad links; caught instantly by moderation, socket closed with 1008, IP recorded; partner reassured with friendly notice; attacker denied reconnect.
-
-    Validates automated security enforcement: instant termination of bad actors,
-    partner shielding and notification, IP ban persistence, and clean partner recovery.
-    """
+async def test_t4_severe_threat_enforcement_and_partner_recovery(make_client, server_ws_url):
+    """A direct threat ends the current chat, shields the partner, and allows fresh reconnects."""
     client_good = await make_client()
     client_bad = await make_client()
 
-    # Good and bad users match in a session
     await client_good.join_queue()
     await client_bad.join_queue()
     await client_good.recv_type("matched", timeout=5.0)
     await client_bad.recv_type("matched", timeout=5.0)
 
-    # Bad actor sends severely toxic message
-    toxic_text = "kys kill yourself you worthless piece of trash"
-    await client_bad.send_chat(toxic_text)
-
-    # Bad actor receives banned notification and/or connection closed with 1008
-    try:
-        ban_msg = await client_bad.recv_type("banned", timeout=3.0)
-        assert ban_msg["type"] == "banned"
-    except Exception:
-        pass
+    await client_bad.send_chat("I will kill you")
+    error = await client_bad.recv_type("error", timeout=3.0)
+    assert error["payload"]["code"] == "SEVERE_POLICY_VIOLATION"
 
     try:
         while True:
             await client_bad.recv_json(timeout=2.0)
     except (websockets.exceptions.ConnectionClosed, Exception):
         pass
-    assert client_bad.close_code in (1008, 4403)
+    assert client_bad.close_code == 1008
 
-    # Good user receives peer_disconnected notification with reason: "banned"
     disc_good = await client_good.recv_type("peer_disconnected", timeout=5.0)
-    assert disc_good["type"] == "peer_disconnected"
-    assert disc_good.get("payload", {}).get("reason") == "banned"
-    assert disc_good.get("payload", {}).get("can_requeue") is True
+    assert disc_good["payload"]["reason"] == "banned"
+    assert disc_good["payload"]["can_requeue"] is True
 
-    # Good user was shielded: did NOT receive toxic message
     good_drained = await client_good.drain(timeout=0.3)
     assert not any(m.get("type") == "chat" for m in good_drained)
 
-    # Attacker attempts immediate reconnect from same IP: rejected or closed
+    # No IP ban is issued, so a fresh anonymous connection can reconnect.
     from tests.conftest import AsyncStrangerClient
-    reconnect_attacker = AsyncStrangerClient(server_ws_url)
-    try:
-        await reconnect_attacker.connect(timeout=2.0)
-        try:
-            ban_reply = await reconnect_attacker.recv_type("banned", timeout=2.0)
-            assert ban_reply["type"] == "banned"
-        except Exception:
-            await reconnect_attacker.drain(timeout=0.5)
-            assert reconnect_attacker.close_code in (1008, 4403)
-    except (websockets.exceptions.InvalidStatus, websockets.exceptions.ConnectionClosed):
-        # HTTP 403 Forbidden handshake rejection
-        pass
-    finally:
-        await reconnect_attacker.close()
-
-    # Innocent partner recovers: re-enters queue and matches with friendly stranger
-    # (lift ban for localhost so innocent peer on same test runner IP can queue)
-    from app.moderation.ban_manager import ban_manager
-    ban_manager.lift_ban("127.0.0.1")
+    reconnect = AsyncStrangerClient(server_ws_url)
+    await reconnect.connect(timeout=2.0)
+    assert reconnect.close_code is None
+    await reconnect.close()
 
     await client_good.join_queue()
-
     client_friendly = await make_client()
     await client_friendly.join_queue()
-
-    # Good user and friendly stranger match into a safe session
     m_good = await client_good.recv_type("matched", timeout=5.0)
     m_friendly = await client_friendly.recv_type("matched", timeout=5.0)
     assert m_good["session_id"] == m_friendly["session_id"]
 
-    # Safe conversation proceeds
     await client_good.send_chat("Hello! Glad to be paired with someone nice.")
     f_received = await client_friendly.recv_type("chat", timeout=5.0)
     assert f_received["payload"]["text"] == "Hello! Glad to be paired with someone nice."
