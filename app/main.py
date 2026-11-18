@@ -10,9 +10,8 @@ import hmac
 from time import monotonic
 import uuid
 
-import httpx
 from pydantic import ValidationError
-from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -96,7 +95,6 @@ matchmaker_queue = MatchmakerQueue()
 session_manager = SessionManager()
 signaling_relay = SignalingRelay(stun_servers=settings.STUN_SERVERS)
 ip_rate_limiter = IPRateLimiter(settings.WS_RATE_LIMIT_MESSAGES, settings.WS_RATE_LIMIT_WINDOW_SECONDS)
-tenor_rate_limiter = IPRateLimiter(25, 60.0)
 report_rate_limiter = IPRateLimiter(3, 3600.0)
 report_ip_rate_limiter = IPRateLimiter(20, 3600.0)
 report_store = ReportStore(settings.REPORTS_DB_PATH, settings.REPORT_RETENTION_DAYS)
@@ -159,83 +157,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.get("/api/gifs/search")
-async def search_tenor_gifs(
-    request: Request,
-    q: str = Query(..., min_length=1, max_length=80),
-    pos: str | None = Query(default=None, max_length=256),
-):
-    """Search Tenor server-side so the API key never reaches the browser."""
-    api_key = settings.TENOR_API_KEY
-    if not api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="GIF search is not configured. Add an existing Tenor API key to TENOR_API_KEY.",
-        )
-
-    client_ip = request.client.host if request.client else "unknown"
-    if not tenor_rate_limiter.allow(client_ip):
-        raise HTTPException(status_code=429, detail="Too many GIF searches. Please wait a moment.")
-
-    params = {
-        "key": api_key,
-        "client_key": settings.TENOR_CLIENT_KEY,
-        "q": q.strip(),
-        "limit": 12,
-        "contentfilter": "high",
-        "country": "IN",
-        "locale": "en_IN",
-        "media_filter": "gif,tinygif",
-    }
-    if pos:
-        params["pos"] = pos
-
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
-            response = await client.get("https://tenor.googleapis.com/v2/search", params=params)
-            response.raise_for_status()
-            body = response.json()
-    except httpx.TimeoutException as exc:
-        raise HTTPException(status_code=504, detail="GIF search timed out. Please try again.") from exc
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("Tenor GIF search failed: %s", exc)
-        raise HTTPException(status_code=502, detail="GIF search is temporarily unavailable.") from exc
-
-    results = []
-    for item in body.get("results", []):
-        if not isinstance(item, dict):
-            continue
-        formats = item.get("media_formats") or {}
-        full = formats.get("gif") or formats.get("mediumgif") or formats.get("tinygif")
-        preview = formats.get("tinygif") or full
-        if not isinstance(full, dict) or not isinstance(preview, dict):
-            continue
-        gif_url = full.get("url")
-        preview_url = preview.get("url")
-        if not isinstance(gif_url, str) or moderate_gif_url(gif_url).is_flagged:
-            continue
-        if not isinstance(preview_url, str) or moderate_gif_url(preview_url).is_flagged:
-            preview_url = gif_url
-
-        def dimension(value):
-            try:
-                number = int(value)
-                return number if 1 <= number <= 10000 else None
-            except (TypeError, ValueError):
-                return None
-
-        results.append({
-            "id": str(item.get("id", ""))[:80],
-            "title": str(item.get("content_description") or item.get("title") or "GIF")[:160],
-            "url": gif_url,
-            "preview_url": preview_url,
-            "width": dimension(full.get("dims", [None, None])[0]) if isinstance(full.get("dims"), list) and len(full["dims"]) > 0 else None,
-            "height": dimension(full.get("dims", [None, None])[1]) if isinstance(full.get("dims"), list) and len(full["dims"]) > 1 else None,
-        })
-
-    return {"results": results, "next": str(body.get("next") or "")[:256]}
 
 
 @app.get("/admin/reports")
@@ -673,7 +594,7 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
             "url": safe_url,
             "sender": "peer",
             "message_id": msg_id,
-            "provider": payload_data.get("provider") if payload_data.get("provider") in {"tenor", "giphy"} else "tenor",
+            "provider": payload_data.get("provider") if payload_data.get("provider") in {"tenor", "giphy"} else "giphy",
             "preview_url": preview_url,
             "title": payload_data.get("title"),
             "width": sanitized_w,

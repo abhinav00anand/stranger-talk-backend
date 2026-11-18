@@ -2,7 +2,6 @@
 
 import asyncio
 
-import httpx
 import pytest
 
 from app.safety.report_store import ReportStore
@@ -117,15 +116,3 @@ async def test_block_action_skips_blocked_pair_and_finds_other_user(make_client)
     report_match = await reporter.recv_type("matched", timeout=5.0)
     replacement_match = await replacement.recv_type("matched", timeout=5.0)
     assert report_match["session_id"] == replacement_match["session_id"]
-
-
-@pytest.mark.asyncio
-async def test_tenor_search_requires_server_side_api_key(monkeypatch):
-    import app.main as main
-
-    monkeypatch.setattr(main.settings, "TENOR_API_KEY", None)
-    transport = httpx.ASGITransport(app=main.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/gifs/search", params={"q": "hello"})
-    assert response.status_code == 503
-    assert "TENOR_API_KEY" in response.json()["detail"]

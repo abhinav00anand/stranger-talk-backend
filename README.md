@@ -8,7 +8,7 @@ Real-time anonymous stranger chat and live WebRTC audio calling service inspired
 
 - **Live 1-on-1 WebRTC Voice Signaling**: Peer-to-peer audio streaming using Google public STUN (`stun:stun.l.google.com:19302`) with deterministic initiator assignment for glare-free SDP negotiation.
 - **Dynamic Matchmaking Engine**: FIFO pairing queue with topic matching, instant skip re-queueing, and graceful leave disconnects.
-- **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and server-side Tenor GIF search. GIF URLs are still validated before relay.
+- **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and support for client-selected GIPHY GIFs. Every GIF URL is validated server-side before relay.
 - **Local Content Moderation & Enforcement**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
   - Explicit direct threats and repeated blocked messages end the offending connection with a clear `banned` event. This connection-scoped action does not issue a new IP ban, avoiding collateral bans on shared networks.
