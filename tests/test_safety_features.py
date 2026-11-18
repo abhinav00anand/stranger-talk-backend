@@ -5,7 +5,13 @@ import asyncio
 import httpx
 import pytest
 
+from app.config import Settings
 from app.safety.report_store import ReportStore
+
+
+def test_reports_database_defaults_to_ram_backed_tmpfs():
+    settings = Settings(_env_file=None)
+    assert settings.REPORTS_DB_PATH == "/dev/shm/talkfreely_reports.sqlite3"
 
 
 def test_report_store_persists_only_selected_evidence(tmp_path):
