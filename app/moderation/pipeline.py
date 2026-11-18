@@ -147,9 +147,18 @@ class ModerationPipeline:
             else None
         )
         if is_toxic:
-            return ModerationResult.ban(
+            # One deterministic keyword match is not sufficient evidence for an IP ban.
+            # Only an explicit, directed violent threat escalates to connection removal.
+            if reason == "violent_threat":
+                return ModerationResult.ban(
+                    reason=reason,
+                    confidence=0.95,
+                    stage="stage1_fastpath",
+                    normalized_text=normalized,
+                )
+            return ModerationResult.block(
                 reason=reason or "toxic_language",
-                confidence=1.0,
+                confidence=0.85,
                 stage="stage1_fastpath",
                 normalized_text=normalized,
             )
