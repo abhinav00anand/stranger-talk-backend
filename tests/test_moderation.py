@@ -71,8 +71,9 @@ async def test_t1_f8_direct_threat_ends_current_chat_without_ip_ban(make_client)
 
     await client_a.send_chat("I will hunt you down and kill you")
 
-    msg = await client_a.recv_type("error", timeout=3.0)
-    assert msg["payload"]["code"] == "SEVERE_POLICY_VIOLATION"
+    msg = await client_a.recv_type("banned", timeout=3.0)
+    assert msg["payload"]["ban_scope"] == "connection"
+    assert "Terms & Conditions" in msg["payload"]["reason"]
     partner = await client_b.recv_type("peer_disconnected", timeout=3.0)
     assert partner["payload"]["reason"] == "banned"
 
@@ -243,8 +244,8 @@ async def test_repeated_blocked_messages_end_only_the_offending_connection(make_
         assert client_a.close_code is None
 
     await client_a.send_chat("kys")
-    escalated = await client_a.recv_type("error", timeout=3.0)
-    assert escalated["payload"]["code"] == "REPEATED_POLICY_VIOLATIONS"
+    escalated = await client_a.recv_type("banned", timeout=3.0)
+    assert escalated["payload"]["ban_scope"] == "connection"
 
     disconnected = await client_b.recv_type("peer_disconnected", timeout=3.0)
     assert disconnected["payload"]["reason"] == "banned"

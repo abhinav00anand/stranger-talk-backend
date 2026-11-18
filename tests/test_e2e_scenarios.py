@@ -140,8 +140,9 @@ async def test_t4_severe_threat_enforcement_and_partner_recovery(make_client, se
     await client_bad.recv_type("matched", timeout=5.0)
 
     await client_bad.send_chat("I will kill you")
-    error = await client_bad.recv_type("error", timeout=3.0)
-    assert error["payload"]["code"] == "SEVERE_POLICY_VIOLATION"
+    ban_notice = await client_bad.recv_type("banned", timeout=3.0)
+    assert ban_notice["payload"]["ban_scope"] == "connection"
+    assert "Terms & Conditions" in ban_notice["payload"]["reason"]
 
     try:
         while True:

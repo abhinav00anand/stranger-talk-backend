@@ -97,7 +97,8 @@ session_manager = SessionManager()
 signaling_relay = SignalingRelay(stun_servers=settings.STUN_SERVERS)
 ip_rate_limiter = IPRateLimiter(settings.WS_RATE_LIMIT_MESSAGES, settings.WS_RATE_LIMIT_WINDOW_SECONDS)
 tenor_rate_limiter = IPRateLimiter(25, 60.0)
-report_rate_limiter = IPRateLimiter(5, 3600.0)
+report_rate_limiter = IPRateLimiter(3, 3600.0)
+report_ip_rate_limiter = IPRateLimiter(20, 3600.0)
 report_store = ReportStore(settings.REPORTS_DB_PATH, settings.REPORT_RETENTION_DAYS)
 reports_ready = False
 blocked_pairs: set[tuple[str, str]] = set()
@@ -559,6 +560,7 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
                     message="Your partner was disconnected after repeated safety violations.",
                 ))
             await session_manager.terminate_session(session.session_id, reason="banned")
+            session_manager.set_client_state(client_id, ClientState.BANNED)
             async with connections_lock:
                 ws = active_connections.get(client_id)
             if ws:
@@ -598,6 +600,7 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
                 message="Your partner was disconnected for a serious safety violation.",
             ))
         await session_manager.terminate_session(session.session_id, reason="banned")
+        session_manager.set_client_state(client_id, ClientState.BANNED)
         async with connections_lock:
             ws = active_connections.get(client_id)
         if ws:
@@ -795,7 +798,7 @@ async def _handle_report(
             session_id=session.session_id,
         ))
         return
-    if not report_rate_limiter.allow(client_id):
+    if not report_rate_limiter.allow(client_id) or not report_ip_rate_limiter.allow(client_ip):
         await send_to_client(client_id, WebSocketEnvelope.create(
             msg_type=ServerMessageType.ERROR,
             payload={"code": "REPORT_RATE_LIMITED", "message": "You have reached the report limit. Please contact indrohelpdesk@gmail.com for urgent concerns."},
@@ -1045,6 +1048,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _handle_leave(client_id, session_id)
             elif msg_type == "chat":
                 await _handle_chat(client_id, client_ip, payload, session_id)
+                # _handle_chat may close this socket after sending a "banned" notice.
+                # Break here rather than reading another frame from a closed ASGI socket.
+                if session_manager.get_client_state(client_id) == ClientState.BANNED:
+                    break
             elif msg_type == "gif":
                 await _handle_gif(client_id, client_ip, payload, session_id)
             elif msg_type == "report":

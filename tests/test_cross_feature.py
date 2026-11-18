@@ -198,8 +198,9 @@ async def test_t3_chat_severe_threat_ends_session_and_partner_requeues(make_clie
     assert init_chat["payload"]["text"] == "Hope you are having a nice day!"
 
     await client_violator.send_chat("I will kill you")
-    severe_error = await client_violator.recv_type("error", timeout=3.0)
-    assert severe_error["payload"]["code"] == "SEVERE_POLICY_VIOLATION"
+    severe_notice = await client_violator.recv_type("banned", timeout=3.0)
+    assert severe_notice["payload"]["ban_scope"] == "connection"
+    assert "Terms & Conditions" in severe_notice["payload"]["reason"]
 
     try:
         while True:
