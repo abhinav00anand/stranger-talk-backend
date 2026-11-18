@@ -1,4 +1,4 @@
-"""Application configuration and environment settings."""
+""""Application configuration and environment settings."""
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     # WebSocket transport and abuse controls
     WS_MAX_MESSAGE_BYTES: int = 262_144
 
-    # Safety reports are stored in SQLite. On Railway, mount a persistent volume
-    # at /data and set REPORTS_DB_PATH=/data/talkfreely_reports.sqlite3.
-    REPORTS_DB_PATH: str = "./data/talkfreely_reports.sqlite3"
+    # Reports use Linux /dev/shm (tmpfs) by default: RAM-backed and intentionally
+    # non-persistent. Override only if a different storage lifecycle is desired.
+    REPORTS_DB_PATH: str = "/dev/shm/talkfreely_reports.sqlite3"
     REPORT_RETENTION_DAYS: int = 90
     REPORTS_ADMIN_TOKEN: str | None = None
     WS_RATE_LIMIT_MESSAGES: int = 60
