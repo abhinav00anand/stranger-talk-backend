@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 import logging
+import sys
 import hmac
 from time import monotonic
 import uuid
@@ -41,6 +42,12 @@ from app.moderation.pipeline import (
 from app.safety.report_store import ReportStore
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _stdout_handler = logging.StreamHandler(sys.stdout)
+    _stdout_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(_stdout_handler)
+logger.propagate = False
 
 
 class SlidingWindowRateLimiter:
@@ -905,6 +912,7 @@ async def websocket_endpoint(websocket: WebSocket):
     client_ip = websocket.client.host if websocket.client else "127.0.0.1"
     origin = websocket.headers.get("origin")
     if settings.ALLOWED_ORIGINS and origin and origin not in settings.ALLOWED_ORIGINS:
+        logger.warning("WebSocket rejected reason=origin_not_allowed")
         await websocket.close(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="Origin not allowed",
@@ -927,6 +935,7 @@ async def websocket_endpoint(websocket: WebSocket):
             session_id=None,
         )
         await websocket.send_text(banned_env.model_dump_json())
+        logger.warning("WebSocket close requested reason=ip_banned code=1008")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="IP is banned")
         return
 
@@ -943,9 +952,11 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             raw_text = await websocket.receive_text()
             if len(raw_text.encode("utf-8")) > settings.WS_MAX_MESSAGE_BYTES:
+                logger.warning("WebSocket close requested client_id=%s reason=message_too_large code=1009", client_id)
                 await websocket.close(code=1009, reason="Message too large")
                 break
             if not ip_rate_limiter.allow(client_ip):
+                logger.warning("WebSocket close requested client_id=%s reason=ip_rate_limit code=1008", client_id)
                 await websocket.close(code=1008, reason="Rate limit exceeded")
                 break
 
@@ -1021,6 +1032,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         logger.exception("Unexpected error in websocket loop client_id=%s", client_id)
     finally:
+        logger.info("WebSocket cleanup started client_id=%s duration_seconds=%.1f", client_id, monotonic() - connected_at)
         session, partner_id = await session_manager.handle_disconnect(client_id)
         if session and partner_id:
             disc_env = WebSocketEnvelope.create(msg_type=ServerMessageType.PEER_DISCONNECTED, payload=PeerDisconnectedPayload(reason="disconnected", can_requeue=True).model_dump(), session_id=session.session_id)
