@@ -932,6 +932,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     client_id = str(uuid.uuid4())
+    connected_at = monotonic()
+    logger.info("WebSocket connected client_id=%s", client_id)
 
     async with connections_lock:
         active_connections[client_id] = websocket
@@ -1006,10 +1008,18 @@ async def websocket_endpoint(websocket: WebSocket):
             else:
                 await send_to_client(client_id, WebSocketEnvelope.create(msg_type=ServerMessageType.ERROR, payload={"code": "UNKNOWN_MESSAGE_TYPE", "message": "Unsupported message type"}, session_id=session_id))
 
-    except (WebSocketDisconnect, asyncio.CancelledError):
-        pass
-    except Exception as exc:
-        logger.error("Unexpected error in websocket loop for %s: %s", client_id, exc)
+    except WebSocketDisconnect as exc:
+        logger.info(
+            "WebSocket disconnected client_id=%s close_code=%s duration_seconds=%.1f",
+            client_id,
+            exc.code,
+            monotonic() - connected_at,
+        )
+    except asyncio.CancelledError:
+        logger.info("WebSocket task cancelled client_id=%s", client_id)
+        raise
+    except Exception:
+        logger.exception("Unexpected error in websocket loop client_id=%s", client_id)
     finally:
         session, partner_id = await session_manager.handle_disconnect(client_id)
         if session and partner_id:
@@ -1024,3 +1034,8 @@ async def websocket_endpoint(websocket: WebSocket):
         report_rate_limiter._events.pop(client_id, None)
         await matchmaker_queue.pop_client(client_id)
         session_manager.forget_client(client_id)
+        logger.info(
+            "WebSocket cleanup complete client_id=%s duration_seconds=%.1f",
+            client_id,
+            monotonic() - connected_at,
+        )
