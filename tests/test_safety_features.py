@@ -1,7 +1,8 @@
-"""Regression tests for user safety reports, blocking, and server-side Tenor search."""
+"""Regression tests for user safety reports, blocking, and GIF metadata validation."""
 
 import asyncio
 
+import httpx
 import pytest
 
 from app.safety.report_store import ReportStore
@@ -116,3 +117,38 @@ async def test_block_action_skips_blocked_pair_and_finds_other_user(make_client)
     report_match = await reporter.recv_type("matched", timeout=5.0)
     replacement_match = await replacement.recv_type("matched", timeout=5.0)
     assert report_match["session_id"] == replacement_match["session_id"]
+
+
+
+def test_gif_dimension_sanitizer_rejects_hostile_values():
+    from app.main import _sanitize_gif_dimension
+
+    assert _sanitize_gif_dimension(640) == 640
+    assert _sanitize_gif_dimension("320") == 320
+    assert _sanitize_gif_dimension("0") is None
+    assert _sanitize_gif_dimension("-10") is None
+    assert _sanitize_gif_dimension(True) is None
+    assert _sanitize_gif_dimension("9" * 5000) is None
+    assert _sanitize_gif_dimension("20000") == 10_000
+
+
+@pytest.mark.asyncio
+async def test_admin_reports_endpoint_requires_configured_token(monkeypatch, tmp_path):
+    import app.main as main
+
+    store = ReportStore(str(tmp_path / "admin-reports.sqlite3"), retention_days=90)
+    store.initialize()
+    monkeypatch.setattr(main, "report_store", store)
+    monkeypatch.setattr(main, "reports_ready", True)
+    monkeypatch.setattr(main.settings, "REPORTS_ADMIN_TOKEN", "test-only-secret")
+
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.get("/admin/reports")
+        wrong = await client.get("/admin/reports", headers={"X-Admin-Token": "wrong"})
+        valid = await client.get("/admin/reports", headers={"X-Admin-Token": "test-only-secret"})
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert valid.status_code == 200
+    assert valid.json() == {"reports": []}

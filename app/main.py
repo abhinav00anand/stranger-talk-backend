@@ -540,6 +540,19 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
     await send_to_client(partner_id, relayed)
 
 
+def _sanitize_gif_dimension(value: object) -> int | None:
+    """Accept small positive integer dimensions only; cap untrusted client values."""
+    if value is None or isinstance(value, bool):
+        return None
+    raw = str(value).strip()
+    if not raw or len(raw) > 5 or not raw.isascii() or not raw.isdecimal():
+        return None
+    dimension = int(raw)
+    if dimension < 1:
+        return None
+    return min(dimension, 10_000)
+
+
 async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, session_id: str | None) -> None:
     """Handle GIF exchange with strict URL and domain validation."""
     url = payload_data.get("url", "")
@@ -580,11 +593,11 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
     if preview_url and moderate_gif_url(preview_url).is_flagged:
         preview_url = None
 
-    # Sanitize dimensions
-    raw_w = payload_data.get("width")
-    raw_h = payload_data.get("height")
-    sanitized_w = max(0, int(raw_w)) if raw_w is not None and str(raw_w).lstrip("-").isdigit() else None
-    sanitized_h = max(0, int(raw_h)) if raw_h is not None and str(raw_h).lstrip("-").isdigit() else None
+    # Sanitize untrusted dimensions and title before relaying provider metadata.
+    sanitized_w = _sanitize_gif_dimension(payload_data.get("width"))
+    sanitized_h = _sanitize_gif_dimension(payload_data.get("height"))
+    raw_title = payload_data.get("title")
+    safe_title = raw_title.strip()[:160] if isinstance(raw_title, str) and raw_title.strip() else "GIF"
 
     partner_id = session.get_partner_id(client_id)
     msg_id = str(uuid.uuid4())
@@ -596,7 +609,7 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
             "message_id": msg_id,
             "provider": payload_data.get("provider") if payload_data.get("provider") in {"tenor", "giphy"} else "giphy",
             "preview_url": preview_url,
-            "title": payload_data.get("title"),
+            "title": safe_title,
             "width": sanitized_w,
             "height": sanitized_h,
         },
