@@ -101,10 +101,10 @@ _MULTI_NON_WORD_RE = re.compile(r"[\W_]{2,}")
 _MULTI_WHITESPACE_RE = re.compile(r"\s+")
 _REPORTING_CONTEXT_RE = re.compile(
     r"^(?:someone|somebody|a stranger|my friend|my partner|he|she|they)"
-    r"[\\W_]+(?:told me to|said)[\\W_]+"
-    r"(?:kys|kill yourself|hang yourself|slit your wrists|commit suicide|drink bleach)\\b|"
-    r"^i[\\W_]+was[\\W_]+(?:told|messaged|sent)[\\W_]+"
-    r"(?:to[\\W_]+)?(?:kys|kill yourself|hang yourself|slit your wrists|commit suicide|drink bleach)\\b",
+    r"[\W_]+(?:told me to|said)[\W_]+"
+    r"(?:kys|kill yourself|hang yourself|slit your wrists|commit suicide|drink bleach)\b|"
+    r"^i[\W_]+was[\W_]+(?:told|messaged|sent)[\W_]+"
+    r"(?:to[\W_]+)?(?:kys|kill yourself|hang yourself|slit your wrists|commit suicide|drink bleach)\b",
     re.IGNORECASE,
 )
 
