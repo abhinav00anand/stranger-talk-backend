@@ -96,6 +96,7 @@ ip_rate_limiter = IPRateLimiter(settings.WS_RATE_LIMIT_MESSAGES, settings.WS_RAT
 # Active WebSocket connections: client_id -> WebSocket
 active_connections: dict[str, WebSocket] = {}
 connection_ips: dict[str, str] = {}
+moderation_strikes: dict[str, int] = {}
 connections_lock = asyncio.Lock()
 
 
@@ -418,8 +419,34 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
         return
 
     if mod_result.is_blocked:
-        # Withhold the message without penalizing the sender's IP. Shared Wi-Fi
-        # and carrier-grade NAT make IP bans unsafe for anonymous chat.
+        # Escalate repeated blocked messages on this connection only. Never punish
+        # an IP shared by family members, schools, offices, or mobile carriers.
+        strikes = moderation_strikes.get(client_id, 0) + 1
+        moderation_strikes[client_id] = strikes
+        if strikes >= 3:
+            await send_to_client(client_id, WebSocketEnvelope.create(
+                msg_type=ServerMessageType.ERROR,
+                payload={
+                    "code": "REPEATED_POLICY_VIOLATIONS",
+                    "message": "This chat was ended after repeated messages that violated the community safety rules.",
+                },
+                session_id=session.session_id,
+            ))
+            partner_id = session.get_partner_id(client_id)
+            if partner_id:
+                await send_to_client(partner_id, create_partner_banned_envelope(
+                    session.session_id,
+                    reason="banned",
+                    message="Your partner was disconnected after repeated safety violations.",
+                ))
+            await session_manager.terminate_session(session.session_id, reason="banned")
+            session_manager.set_client_state(client_id, ClientState.DISCONNECTED)
+            async with connections_lock:
+                ws = active_connections.get(client_id)
+            if ws:
+                await ws.close(code=1008, reason="Repeated policy violations")
+            return
+
         await send_to_client(client_id, WebSocketEnvelope.create(
             msg_type=ServerMessageType.ERROR,
             payload={
@@ -763,5 +790,6 @@ async def websocket_endpoint(websocket: WebSocket):
         async with connections_lock:
             active_connections.pop(client_id, None)
             connection_ips.pop(client_id, None)
+            moderation_strikes.pop(client_id, None)
         await matchmaker_queue.pop_client(client_id)
         session_manager.forget_client(client_id)
