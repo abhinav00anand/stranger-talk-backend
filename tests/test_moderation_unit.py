@@ -309,6 +309,7 @@ def test_normalizer_does_not_flag_reports_or_discussion_as_threats():
 def test_normalizer_requires_direct_intent_for_violent_threats():
     """A bare phrase is not treated as a credible direct threat."""
     assert TextNormalizer.check_toxic("The phrase kill you appears in this article.") == (False, None)
+    assert TextNormalizer.check_toxic("He will kill you") == (False, None)
     assert TextNormalizer.check_toxic("I will kill you") == (True, "violent_threat")
     assert TextNormalizer.check_toxic("Someone said I will kill you") == (True, "violent_threat")
 
