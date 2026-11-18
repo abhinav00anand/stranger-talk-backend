@@ -1,5 +1,6 @@
 """Application configuration and environment settings."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +40,13 @@ class Settings(BaseSettings):
         "media.tenor.com",
         "c.tenor.com",
     ]
+
+    @model_validator(mode="after")
+    def moderation_must_remain_enabled_in_production(self):
+        """Prevent an accidental environment toggle from disabling safety checks."""
+        if self.APP_ENV.lower() in {"production", "prod"} and not self.MODERATION_ENABLED:
+            raise ValueError("MODERATION_ENABLED cannot be false in production")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",
