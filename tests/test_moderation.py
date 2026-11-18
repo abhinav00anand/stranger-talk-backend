@@ -229,3 +229,30 @@ async def test_t2_f8_partner_not_banned_on_peer_violation(make_client):
     await client_b.join_queue()
     msg = await client_b.recv_type("queued", timeout=3.0)
     assert msg["type"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_repeated_blocked_messages_end_only_the_offending_connection(make_client):
+    """Three blocked messages end the sender's current session without an IP ban."""
+    client_a, client_b = await _pair_two_clients(make_client)
+
+    for _ in range(2):
+        await client_a.send_chat("kys")
+        blocked = await client_a.recv_type("error", timeout=3.0)
+        assert blocked["payload"]["code"] == "MESSAGE_BLOCKED"
+        assert client_a.close_code is None
+
+    await client_a.send_chat("kys")
+    escalated = await client_a.recv_type("error", timeout=3.0)
+    assert escalated["payload"]["code"] == "REPEATED_POLICY_VIOLATIONS"
+
+    disconnected = await client_b.recv_type("peer_disconnected", timeout=3.0)
+    assert disconnected["payload"]["reason"] == "banned"
+    assert disconnected["payload"]["can_requeue"] is True
+
+    try:
+        while True:
+            await client_a.recv_json(timeout=2.0)
+    except (websockets.exceptions.ConnectionClosed, Exception):
+        pass
+    assert client_a.close_code == 1008
