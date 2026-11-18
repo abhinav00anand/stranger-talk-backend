@@ -189,66 +189,39 @@ async def test_t3_matchmaking_signaling_and_gif(make_client):
 
 
 @pytest.mark.asyncio
-async def test_t3_chat_moderation_ban_and_partner_requeue(make_client):
-    """Users chat; violator sends toxic message and is banned; innocent partner automatically re-enters queue and matches with another user.
-
-    Verifies policy violation detection, socket closure for offender, partner notification
-    with reason 'banned', and smooth partner re-queueing to pair with another innocent peer.
-    """
+async def test_t3_chat_severe_threat_ends_session_and_partner_requeues(make_client):
+    """A direct violent threat ends the offender's session; the partner can requeue."""
     client_violator, client_partner = await _pair_two_clients(make_client)
 
-    # Initial friendly message
     await client_partner.send_chat("Hope you are having a nice day!")
     init_chat = await client_violator.recv_type("chat", timeout=5.0)
     assert init_chat["payload"]["text"] == "Hope you are having a nice day!"
 
-    # Violator sends toxic message violating policies
-    toxic_text = "kys kill yourself you worthless trash"
-    await client_violator.send_chat(toxic_text)
+    await client_violator.send_chat("I will kill you")
+    severe_error = await client_violator.recv_type("error", timeout=3.0)
+    assert severe_error["payload"]["code"] == "SEVERE_POLICY_VIOLATION"
 
-    # Violator receives banned envelope and/or socket termination (code 1008)
-    try:
-        ban_msg = await client_violator.recv_type("banned", timeout=3.0)
-        assert ban_msg["type"] == "banned"
-    except Exception:
-        pass
-
-    # Ensure violator connection closes
     try:
         while True:
             await client_violator.recv_json(timeout=2.0)
     except (websockets.exceptions.ConnectionClosed, Exception):
         pass
-    assert client_violator.close_code in (1008, 4403)
+    assert client_violator.close_code == 1008
 
-    # Innocent partner receives peer_disconnected notification with reason: "banned"
     disc_partner = await client_partner.recv_type("peer_disconnected", timeout=5.0)
-    assert disc_partner["type"] == "peer_disconnected"
-    assert disc_partner.get("payload", {}).get("reason") == "banned"
-    assert disc_partner.get("payload", {}).get("can_requeue") is True
+    assert disc_partner["payload"]["reason"] == "banned"
+    assert disc_partner["payload"]["can_requeue"] is True
 
-    # Innocent partner did NOT receive the toxic message
     partner_drained = await client_partner.drain(timeout=0.3)
     assert not any(m.get("type") == "chat" for m in partner_drained)
 
-    # Innocent partner re-enters matchmaking queue
-    try:
-        from app.moderation.ban_manager import ban_manager
-        ban_manager.lift_ban("127.0.0.1")
-    except Exception:
-        pass
     await client_partner.join_queue()
-
-    # New client C enters queue
     client_c = await make_client()
     await client_c.join_queue()
-
-    # Partner and Client C match cleanly
     match_partner = await client_partner.recv_type("matched", timeout=5.0)
     match_c = await client_c.recv_type("matched", timeout=5.0)
     assert match_partner["session_id"] == match_c["session_id"]
 
-    # They can exchange messages in peace
     await client_partner.send_chat("Hello new friend!")
     c_chat = await client_c.recv_type("chat", timeout=5.0)
     assert c_chat["payload"]["text"] == "Hello new friend!"
