@@ -219,22 +219,13 @@ async def test_t2_f8_ban_duration_ttl_expiration():
 
 @pytest.mark.asyncio
 async def test_t2_f8_partner_not_banned_on_peer_violation(make_client):
-    """Innocent partner is not banned when their peer violates policy and can immediately re-queue."""
+    """The innocent partner remains connected and can requeue after a direct threat."""
     client_a, client_b = await _pair_two_clients(make_client)
 
-    # Client A commits violation
-    await client_a.send_chat("kill yourself right now")
-
-    # Client B receives peer_disconnected
+    await client_a.send_chat("I will kill you")
     await client_b.recv_type("peer_disconnected", timeout=5.0)
 
-    # Client B's socket must remain healthy (not closed with 1008)
     assert client_b.close_code != 1008
-
-    # Client B can immediately rejoin matchmaking queue (lift ban for localhost in local test environment)
-    from app.moderation.ban_manager import ban_manager
-    ban_manager.lift_ban("127.0.0.1")
-
     await client_b.join_queue()
     msg = await client_b.recv_type("queued", timeout=3.0)
     assert msg["type"] == "queued"
