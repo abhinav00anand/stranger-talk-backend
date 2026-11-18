@@ -25,6 +25,16 @@ class Settings(BaseSettings):
 
     # WebSocket transport and abuse controls
     WS_MAX_MESSAGE_BYTES: int = 262_144
+
+    # Safety reports are stored in SQLite. On Railway, mount a persistent volume
+    # at /data and set REPORTS_DB_PATH=/data/talkfreely_reports.sqlite3.
+    REPORTS_DB_PATH: str = "./data/talkfreely_reports.sqlite3"
+    REPORT_RETENTION_DAYS: int = 90
+    REPORTS_ADMIN_TOKEN: str | None = None
+
+    # Tenor API credentials stay server-side; never expose TENOR_API_KEY to the browser.
+    TENOR_API_KEY: str | None = None
+    TENOR_CLIENT_KEY: str = "talkfreely_web"
     WS_RATE_LIMIT_MESSAGES: int = 60
     WS_RATE_LIMIT_WINDOW_SECONDS: float = 10.0
 

@@ -123,32 +123,27 @@ class MatchmakerQueue:
             self._tickets.clear()
             self._queue.clear()
 
-    async def try_pop_pair(self) -> Optional[Tuple[str, str]]:
-        """Atomically find and pop the best matching pair of clients.
+    async def try_pop_pair(
+        self,
+        blocked_pairs: Optional[Set[Tuple[str, str]]] = None,
+    ) -> Optional[Tuple[str, str]]:
+        """Atomically select the best compatible pair, excluding explicitly blocked pairs.
 
-        Selection strategy:
-        1. Fast-path exit if fewer than 2 active tickets exist.
-        2. Prune leading ghost/stale entries from the queue.
-        3. Topic matching pass: If two distinct waiting clients share at least
-           one common topic (case-insensitive), pair them.
-        4. Fallback pass: If no topic match exists, pair the oldest two
-           distinct clients in pure FIFO arrival order.
-        5. Atomically remove both participants from queue and ticket registry.
-
-        Returns:
-            Tuple of (client_a, client_b) where client_a is the senior peer,
-            or None if no valid pair can be formed.
+        Pair keys are canonical sorted tuples of connection IDs. Blocking is scoped to
+        the lifetime of those anonymous WebSocket connections, not a permanent identity.
         """
+        normalized_blocks = blocked_pairs or set()
+
+        def is_blocked(left: str, right: str) -> bool:
+            return tuple(sorted((left, right))) in normalized_blocks
+
         async with self._lock:
-            # 1. Fast-path check
             if len(self._tickets) < 2:
                 return None
 
-            # 2. Prune leading ghosts
             while self._queue and self._queue[0] not in self._tickets:
                 self._queue.popleft()
 
-            # 3. Collect unique active candidates in arrival order
             active_client_ids: List[str] = []
             seen: Set[str] = set()
             for cid in self._queue:
@@ -159,47 +154,53 @@ class MatchmakerQueue:
             if len(active_client_ids) < 2:
                 return None
 
-            # 4. Topic Matching Pass: O(N * T)
+            # Prefer the oldest unblocked pair with a shared topic.
             matched_pair: Optional[Tuple[str, str]] = None
-            topic_index: Dict[str, str] = {}  # topic -> client_id
-
-            for cid in active_client_ids:
-                ticket = self._tickets[cid]
-                if ticket.topics:
-                    for topic in ticket.topics:
-                        norm_t = topic.lower()
-                        if norm_t in topic_index:
-                            partner_id = topic_index[norm_t]
-                            if partner_id != cid:
-                                matched_pair = (partner_id, cid)
-                                break
-                        else:
-                            topic_index[norm_t] = cid
+            for index, left in enumerate(active_client_ids):
+                left_topics = {
+                    topic.lower()
+                    for topic in (self._tickets[left].topics or [])
+                }
+                if not left_topics:
+                    continue
+                for right in active_client_ids[index + 1:]:
+                    if is_blocked(left, right):
+                        continue
+                    right_topics = {
+                        topic.lower()
+                        for topic in (self._tickets[right].topics or [])
+                    }
+                    if left_topics.intersection(right_topics):
+                        matched_pair = (left, right)
+                        break
                 if matched_pair is not None:
                     break
 
-            # 5. Pure FIFO Fallback if no topic match
+            # FIFO fallback still works around blocked pairs instead of getting stuck.
             if matched_pair is None:
-                matched_pair = (active_client_ids[0], active_client_ids[1])
+                for index, left in enumerate(active_client_ids):
+                    right = next(
+                        (candidate for candidate in active_client_ids[index + 1:]
+                         if not is_blocked(left, candidate)),
+                        None,
+                    )
+                    if right is not None:
+                        matched_pair = (left, right)
+                        break
 
-            # 6. Atomic extraction
+            if matched_pair is None:
+                return None
+
             client_a, client_b = matched_pair
-
             self._tickets.pop(client_a, None)
             self._tickets.pop(client_b, None)
+            for client_id in (client_a, client_b):
+                try:
+                    self._queue.remove(client_id)
+                except ValueError:
+                    pass
 
-            try:
-                self._queue.remove(client_a)
-            except ValueError:
-                pass
-
-            try:
-                self._queue.remove(client_b)
-            except ValueError:
-                pass
-
-            # Optional deque compaction if stale tombstones exceed active tickets
             if len(self._queue) > 2 * len(self._tickets) + 10:
                 self._queue = deque([cid for cid in self._queue if cid in self._tickets])
 
-            return (client_a, client_b)
+            return client_a, client_b

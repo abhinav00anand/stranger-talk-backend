@@ -6,11 +6,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 import logging
+import hmac
 from time import monotonic
 import uuid
 
+import httpx
 from pydantic import ValidationError
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -22,6 +24,7 @@ from app.models.envelopes import (
     JoinQueuePayload,
     PeerDisconnectedPayload,
     QueuedPayload,
+    ReportPayload,
     SdpPayload,
     ServerMessageType,
     WebSocketEnvelope,
@@ -36,6 +39,7 @@ from app.moderation.pipeline import (
     moderate_gif_url,
     moderate_text,
 )
+from app.safety.report_store import ReportStore
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +96,12 @@ matchmaker_queue = MatchmakerQueue()
 session_manager = SessionManager()
 signaling_relay = SignalingRelay(stun_servers=settings.STUN_SERVERS)
 ip_rate_limiter = IPRateLimiter(settings.WS_RATE_LIMIT_MESSAGES, settings.WS_RATE_LIMIT_WINDOW_SECONDS)
+tenor_rate_limiter = IPRateLimiter(25, 60.0)
+report_rate_limiter = IPRateLimiter(5, 3600.0)
+report_store = ReportStore(settings.REPORTS_DB_PATH, settings.REPORT_RETENTION_DAYS)
+reports_ready = False
+blocked_pairs: set[tuple[str, str]] = set()
+reported_sessions: set[tuple[str, str]] = set()
 
 # Active WebSocket connections: client_id -> WebSocket
 active_connections: dict[str, WebSocket] = {}
@@ -122,7 +132,15 @@ async def send_to_client(client_id: str, envelope: WebSocketEnvelope | dict) -> 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI application lifespan."""
+    global reports_ready
     logger.info("Starting human-only matchmaking services...")
+    try:
+        await asyncio.to_thread(report_store.initialize)
+        reports_ready = True
+        logger.info("Safety report store initialized")
+    except Exception:
+        reports_ready = False
+        logger.exception("Safety report storage is unavailable; report submissions will fail closed")
     yield
     logger.info("Shutting down ChatFreely services...")
 
@@ -140,6 +158,99 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/api/gifs/search")
+async def search_tenor_gifs(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=80),
+    pos: str | None = Query(default=None, max_length=256),
+):
+    """Search Tenor server-side so the API key never reaches the browser."""
+    api_key = settings.TENOR_API_KEY
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="GIF search is not configured. Add an existing Tenor API key to TENOR_API_KEY.",
+        )
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not tenor_rate_limiter.allow(client_ip):
+        raise HTTPException(status_code=429, detail="Too many GIF searches. Please wait a moment.")
+
+    params = {
+        "key": api_key,
+        "client_key": settings.TENOR_CLIENT_KEY,
+        "q": q.strip(),
+        "limit": 12,
+        "contentfilter": "high",
+        "country": "IN",
+        "locale": "en_IN",
+        "media_filter": "gif,tinygif",
+    }
+    if pos:
+        params["pos"] = pos
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+            response = await client.get("https://tenor.googleapis.com/v2/search", params=params)
+            response.raise_for_status()
+            body = response.json()
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="GIF search timed out. Please try again.") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Tenor GIF search failed: %s", exc)
+        raise HTTPException(status_code=502, detail="GIF search is temporarily unavailable.") from exc
+
+    results = []
+    for item in body.get("results", []):
+        if not isinstance(item, dict):
+            continue
+        formats = item.get("media_formats") or {}
+        full = formats.get("gif") or formats.get("mediumgif") or formats.get("tinygif")
+        preview = formats.get("tinygif") or full
+        if not isinstance(full, dict) or not isinstance(preview, dict):
+            continue
+        gif_url = full.get("url")
+        preview_url = preview.get("url")
+        if not isinstance(gif_url, str) or moderate_gif_url(gif_url).is_flagged:
+            continue
+        if not isinstance(preview_url, str) or moderate_gif_url(preview_url).is_flagged:
+            preview_url = gif_url
+
+        def dimension(value):
+            try:
+                number = int(value)
+                return number if 1 <= number <= 10000 else None
+            except (TypeError, ValueError):
+                return None
+
+        results.append({
+            "id": str(item.get("id", ""))[:80],
+            "title": str(item.get("content_description") or item.get("title") or "GIF")[:160],
+            "url": gif_url,
+            "preview_url": preview_url,
+            "width": dimension(full.get("dims", [None, None])[0]) if isinstance(full.get("dims"), list) and len(full["dims"]) > 0 else None,
+            "height": dimension(full.get("dims", [None, None])[1]) if isinstance(full.get("dims"), list) and len(full["dims"]) > 1 else None,
+        })
+
+    return {"results": results, "next": str(body.get("next") or "")[:256]}
+
+
+@app.get("/admin/reports")
+async def list_safety_reports(
+    limit: int = Query(default=50, ge=1, le=200),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Read recent moderation reports. This endpoint requires a private admin token."""
+    if not settings.REPORTS_ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Report administration is not configured.")
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, settings.REPORTS_ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid admin token.")
+    if not reports_ready:
+        raise HTTPException(status_code=503, detail="Report storage is unavailable.")
+    reports = await asyncio.to_thread(report_store.list_reports, limit)
+    return {"reports": reports}
 
 
 @app.get("/health")
@@ -181,7 +292,12 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
         duration = ban_rec.remaining_seconds() if ban_rec else 900
         banned_env = WebSocketEnvelope.create(
             msg_type=ServerMessageType.BANNED,
-            payload={"reason": "IP address is banned due to prior policy violation", "ban_duration_seconds": duration},
+            payload={
+                "reason": ban_rec.reason if ban_rec else "Access from this network was temporarily restricted.",
+                "ban_duration_seconds": duration,
+                "ban_scope": "ip",
+                "appeal_email": "indrohelpdesk@gmail.com",
+            },
             session_id=None,
         )
         session_manager.set_client_state(client_id, ClientState.BANNED)
@@ -242,7 +358,7 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
 async def _pair_waiting_clients() -> None:
     """Create human-only pairs and roll back incomplete match deliveries."""
     while True:
-        pair = await matchmaker_queue.try_pop_pair()
+        pair = await matchmaker_queue.try_pop_pair(blocked_pairs=blocked_pairs)
         if pair is None:
             return
         client_a, client_b = pair
@@ -424,11 +540,14 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
         strikes = moderation_strikes.get(client_id, 0) + 1
         moderation_strikes[client_id] = strikes
         if strikes >= 3:
+            session_manager.set_client_state(client_id, ClientState.BANNED)
             await send_to_client(client_id, WebSocketEnvelope.create(
-                msg_type=ServerMessageType.ERROR,
+                msg_type=ServerMessageType.BANNED,
                 payload={
-                    "code": "REPEATED_POLICY_VIOLATIONS",
-                    "message": "This chat was ended after repeated messages that violated the community safety rules.",
+                    "reason": "Repeated messages continued to violate the TalkFreely Community Rules and Terms & Conditions.",
+                    "policy": "Repeated abusive messages are not permitted.",
+                    "ban_scope": "connection",
+                    "appeal_email": "indrohelpdesk@gmail.com",
                 },
                 session_id=session.session_id,
             ))
@@ -440,7 +559,6 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
                     message="Your partner was disconnected after repeated safety violations.",
                 ))
             await session_manager.terminate_session(session.session_id, reason="banned")
-            session_manager.set_client_state(client_id, ClientState.DISCONNECTED)
             async with connections_lock:
                 ws = active_connections.get(client_id)
             if ws:
@@ -461,11 +579,14 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
         # Explicit, directed violent threats end this connection and session.
         # They do not create an IP ban: the current ban store is process-local,
         # and an IP may be shared by unrelated users.
+        session_manager.set_client_state(client_id, ClientState.BANNED)
         await send_to_client(client_id, WebSocketEnvelope.create(
-            msg_type=ServerMessageType.ERROR,
+            msg_type=ServerMessageType.BANNED,
             payload={
-                "code": "SEVERE_POLICY_VIOLATION",
-                "message": "This chat was ended because your message contained a direct violent threat.",
+                "reason": "A direct violent threat was detected. Threats and intimidation violate the TalkFreely Community Rules and Terms & Conditions.",
+                "policy": "Threats of violence are prohibited.",
+                "ban_scope": "connection",
+                "appeal_email": "indrohelpdesk@gmail.com",
             },
             session_id=session.session_id,
         ))
@@ -477,7 +598,6 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
                 message="Your partner was disconnected for a serious safety violation.",
             ))
         await session_manager.terminate_session(session.session_id, reason="banned")
-        session_manager.set_client_state(client_id, ClientState.DISCONNECTED)
         async with connections_lock:
             ws = active_connections.get(client_id)
         if ws:
@@ -550,7 +670,7 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
             "url": safe_url,
             "sender": "peer",
             "message_id": msg_id,
-            "provider": payload_data.get("provider", "giphy"),
+            "provider": payload_data.get("provider") if payload_data.get("provider") in {"tenor", "giphy"} else "tenor",
             "preview_url": preview_url,
             "title": payload_data.get("title"),
             "width": sanitized_w,
@@ -559,6 +679,164 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
         session_id=session.session_id,
     )
     await send_to_client(partner_id, relayed)
+
+
+def _blocked_pair_key(left: str, right: str) -> tuple[str, str]:
+    """Return a stable key for a pair of live anonymous connections."""
+    return tuple(sorted((left, right)))
+
+
+async def _end_session_after_safety_action(
+    client_id: str,
+    client_ip: str,
+    session,
+    partner_id: str | None,
+    success_type: ServerMessageType,
+    success_payload: dict,
+) -> None:
+    """End a reported/blocked chat, prevent this pair being rematched, and requeue reporter."""
+    if partner_id:
+        blocked_pairs.add(_blocked_pair_key(client_id, partner_id))
+
+    await session_manager.terminate_session(session.session_id, reason="blocked")
+    if partner_id:
+        await send_to_client(partner_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.PEER_DISCONNECTED,
+            payload=PeerDisconnectedPayload(
+                reason="left",
+                can_requeue=True,
+                message="The other participant ended this conversation.",
+            ).model_dump(),
+            session_id=session.session_id,
+        ))
+
+    await send_to_client(client_id, WebSocketEnvelope.create(
+        msg_type=success_type,
+        payload=success_payload,
+        session_id=session.session_id,
+    ))
+    # Keep the same WebSocket client ID so the temporary block survives re-queueing.
+    await _handle_join_queue(client_id, client_ip, {})
+
+
+async def _handle_block(client_id: str, client_ip: str, session_id: str | None) -> None:
+    """Block the current stranger for the lifetime of these anonymous connections."""
+    session = session_manager.get_session_by_client(client_id)
+    if not session or not session.is_active():
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "NOT_IN_SESSION", "message": "There is no active stranger to block."},
+            session_id=session_id,
+        ))
+        return
+    if not session_id or session.session_id != session_id:
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match."},
+            session_id=session_id,
+        ))
+        return
+
+    partner_id = session.get_partner_id(client_id)
+    await _end_session_after_safety_action(
+        client_id,
+        connection_ips.get(client_id, "127.0.0.1"),
+        session,
+        partner_id,
+        ServerMessageType.BLOCKED,
+        {"message": "This stranger has been blocked for this connection. Finding another person."},
+    )
+
+
+async def _handle_report(
+    client_id: str,
+    client_ip: str,
+    payload_data: dict,
+    session_id: str | None,
+) -> None:
+    """Persist a report for the current peer, then block the pair and requeue reporter."""
+    session = session_manager.get_session_by_client(client_id)
+    if not session or not session.is_active():
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "NOT_IN_SESSION", "message": "There is no active stranger to report."},
+            session_id=session_id,
+        ))
+        return
+    if not session_id or session.session_id != session_id:
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_SESSION", "message": "A current session ID is required and must match."},
+            session_id=session_id,
+        ))
+        return
+    if not reports_ready:
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "REPORT_STORAGE_UNAVAILABLE", "message": "Reports are temporarily unavailable. Please email indrohelpdesk@gmail.com instead."},
+            session_id=session.session_id,
+        ))
+        return
+    try:
+        report = ReportPayload.model_validate(payload_data)
+    except ValidationError:
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "INVALID_REPORT", "message": "Choose a valid report reason and keep details within 1,000 characters."},
+            session_id=session.session_id,
+        ))
+        return
+
+    report_key = (client_id, session.session_id)
+    if report_key in reported_sessions:
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "REPORT_ALREADY_SUBMITTED", "message": "A report has already been submitted for this conversation."},
+            session_id=session.session_id,
+        ))
+        return
+    if not report_rate_limiter.allow(client_id):
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "REPORT_RATE_LIMITED", "message": "You have reached the report limit. Please contact indrohelpdesk@gmail.com for urgent concerns."},
+            session_id=session.session_id,
+        ))
+        return
+
+    partner_id = session.get_partner_id(client_id)
+    report_id = str(uuid.uuid4())
+    try:
+        await asyncio.to_thread(
+            report_store.create_report,
+            report_id=report_id,
+            session_id=session.session_id,
+            reporter_client_id=client_id,
+            reported_client_id=partner_id or "unknown",
+            category=report.category,
+            details=report.details,
+            message_excerpt=report.message_excerpt,
+        )
+    except Exception:
+        logger.exception("Unable to store a safety report")
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={"code": "REPORT_STORAGE_ERROR", "message": "Your report could not be saved. Please email indrohelpdesk@gmail.com."},
+            session_id=session.session_id,
+        ))
+        return
+
+    reported_sessions.add(report_key)
+    await _end_session_after_safety_action(
+        client_id,
+        client_ip,
+        session,
+        partner_id,
+        ServerMessageType.REPORT_SUBMITTED,
+        {
+            "report_id": report_id,
+            "message": "Report received. This stranger has been blocked and you are being matched with someone else.",
+        },
+    )
 
 
 async def _handle_typing(client_id: str, payload_data: dict, session_id: str | None) -> None:
@@ -703,7 +981,12 @@ async def websocket_endpoint(websocket: WebSocket):
         duration = banned_rec.remaining_seconds() if banned_rec else settings.BAN_DURATION_SECONDS
         banned_env = WebSocketEnvelope.create(
             msg_type=ServerMessageType.BANNED,
-            payload={"reason": "IP is banned", "ban_duration_seconds": duration},
+            payload={
+                "reason": banned_rec.reason if banned_rec else "Access from this network was temporarily restricted.",
+                "ban_duration_seconds": duration,
+                "ban_scope": "ip",
+                "appeal_email": "indrohelpdesk@gmail.com",
+            },
             session_id=None,
         )
         await websocket.send_text(banned_env.model_dump_json())
@@ -764,6 +1047,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _handle_chat(client_id, client_ip, payload, session_id)
             elif msg_type == "gif":
                 await _handle_gif(client_id, client_ip, payload, session_id)
+            elif msg_type == "report":
+                await _handle_report(client_id, client_ip, payload, session_id)
+            elif msg_type == "block":
+                await _handle_block(client_id, client_ip, session_id)
             elif msg_type == "typing":
                 await _handle_typing(client_id, payload, session_id)
             elif msg_type == "offer":
@@ -791,5 +1078,8 @@ async def websocket_endpoint(websocket: WebSocket):
             active_connections.pop(client_id, None)
             connection_ips.pop(client_id, None)
             moderation_strikes.pop(client_id, None)
+        blocked_pairs.difference_update(pair for pair in list(blocked_pairs) if client_id in pair)
+        reported_sessions.difference_update(key for key in list(reported_sessions) if key[0] == client_id)
+        report_rate_limiter._events.pop(client_id, None)
         await matchmaker_queue.pop_client(client_id)
         session_manager.forget_client(client_id)

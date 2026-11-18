@@ -22,6 +22,8 @@ class ClientMessageType(str, Enum):
     SKIP = "skip"
     LEAVE = "leave"
     PING = "ping"
+    REPORT = "report"
+    BLOCK = "block"
 
 
 class ServerMessageType(str, Enum):
@@ -41,6 +43,8 @@ class ServerMessageType(str, Enum):
     PONG = "pong"
     IDLE = "idle"
     LEFT_SESSION = "left_session"
+    REPORT_SUBMITTED = "report_submitted"
+    BLOCKED = "blocked"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +118,28 @@ class TypingPayload(BaseModel):
     """Payload for typing indicator state updates."""
 
     is_typing: bool
+
+
+class ReportPayload(BaseModel):
+    """Validated user-submitted report; the server derives both participants."""
+
+    category: Literal[
+        "harassment",
+        "threats",
+        "hate_speech",
+        "sexual_content",
+        "spam",
+        "scam_or_phishing",
+        "grooming_or_exploitation",
+        "other",
+    ]
+    details: str = Field(default="", max_length=1000)
+    message_excerpt: str = Field(default="", max_length=800)
+
+    @field_validator("details", "message_excerpt")
+    @classmethod
+    def trim_report_text(cls, value: str) -> str:
+        return value.strip()
 
 
 class PeerDisconnectedPayload(BaseModel):
