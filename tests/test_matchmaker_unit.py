@@ -13,9 +13,28 @@ from app.matchmaker.session_manager import SessionManager
 from app.models.session import ClientState, SessionStatus
 
 
-# ============================================================================
-# MatchmakerQueue Unit Tests
-# ============================================================================
+@pytest.mark.asyncio
+async def test_queue_never_pairs_two_bots():
+    """Verify bots are never paired with other bots, only with human clients."""
+    queue = MatchmakerQueue()
+    await queue.enqueue("bot_1", is_bot=True, topics=["coding"])
+    await queue.enqueue("bot_2", is_bot=True, topics=["coding"])
+
+    # They should NOT match each other even with shared topics
+    pair = await queue.try_pop_pair()
+    assert pair is None
+    assert queue.queue_size() == 2
+
+    # Now enqueue a real human user
+    await queue.enqueue("human_1", is_bot=False, topics=["coding"])
+
+    # The human should be paired with one of the bots
+    pair = await queue.try_pop_pair()
+    assert pair is not None
+    assert "human_1" in pair
+    assert ("bot_1" in pair or "bot_2" in pair)
+    assert queue.queue_size() == 1
+
 
 
 @pytest.mark.asyncio

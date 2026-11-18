@@ -84,6 +84,7 @@ class QueueTicket(BaseModel):
     status: ClientState = ClientState.QUEUED
     topics: Optional[List[str]] = None
     ip: Optional[str] = None
+    is_bot: bool = False
 
     def elapsed_seconds(self) -> float:
         """Calculate how many seconds this ticket has been waiting in queue."""

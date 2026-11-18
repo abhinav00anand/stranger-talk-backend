@@ -56,6 +56,7 @@ class JoinQueuePayload(BaseModel):
     """Payload for client join_queue request."""
 
     topics: Optional[List[str]] = Field(default=None, max_length=10)
+    is_bot: bool = False
 
     @field_validator("topics")
     @classmethod

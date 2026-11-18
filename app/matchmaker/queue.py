@@ -49,6 +49,7 @@ class MatchmakerQueue:
         client_id: str,
         ip: Optional[str] = None,
         topics: Optional[List[str]] = None,
+        is_bot: bool = False,
     ) -> QueueTicket:
         """Enqueue a client into the matchmaking pool.
 
@@ -80,6 +81,7 @@ class MatchmakerQueue:
                 topics=cleaned_topics,
                 status=ClientState.QUEUED,
                 queued_at=datetime.now(timezone.utc),
+                is_bot=is_bot,
             )
             self._tickets[client_id] = ticket
             self._queue.append(client_id)
@@ -154,6 +156,16 @@ class MatchmakerQueue:
             if len(active_client_ids) < 2:
                 return None
 
+            def can_pair(left: str, right: str) -> bool:
+                if is_blocked(left, right):
+                    return False
+                # Strict anti-bot pairing: Never match two bots together!
+                ticket_l = self._tickets.get(left)
+                ticket_r = self._tickets.get(right)
+                if ticket_l and ticket_r and ticket_l.is_bot and ticket_r.is_bot:
+                    return False
+                return True
+
             # Prefer the oldest unblocked pair with a shared topic.
             matched_pair: Optional[Tuple[str, str]] = None
             for index, left in enumerate(active_client_ids):
@@ -164,7 +176,7 @@ class MatchmakerQueue:
                 if not left_topics:
                     continue
                 for right in active_client_ids[index + 1:]:
-                    if is_blocked(left, right):
+                    if not can_pair(left, right):
                         continue
                     right_topics = {
                         topic.lower()
@@ -176,12 +188,12 @@ class MatchmakerQueue:
                 if matched_pair is not None:
                     break
 
-            # FIFO fallback still works around blocked pairs instead of getting stuck.
+            # FIFO fallback still works around blocked pairs and prevents bot-to-bot pairings.
             if matched_pair is None:
                 for index, left in enumerate(active_client_ids):
                     right = next(
                         (candidate for candidate in active_client_ids[index + 1:]
-                         if not is_blocked(left, candidate)),
+                         if can_pair(left, candidate)),
                         None,
                     )
                     if right is not None:

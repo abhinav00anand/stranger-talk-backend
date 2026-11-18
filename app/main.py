@@ -270,7 +270,12 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
         await send_to_client(client_id, err_env)
         return
 
-    await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, topics=validated.topics)
+    await matchmaker_queue.enqueue(
+        client_id=client_id,
+        ip=client_ip,
+        topics=validated.topics,
+        is_bot=validated.is_bot,
+    )
     session_manager.set_client_state(client_id, ClientState.QUEUED)
 
     # Send queued confirmation
