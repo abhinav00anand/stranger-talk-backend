@@ -310,6 +310,7 @@ def test_normalizer_requires_direct_intent_for_violent_threats():
     """A bare phrase is not treated as a credible direct threat."""
     assert TextNormalizer.check_toxic("The phrase kill you appears in this article.") == (False, None)
     assert TextNormalizer.check_toxic("I will kill you") == (True, "violent_threat")
+    assert TextNormalizer.check_toxic("Someone said I will kill you") == (True, "violent_threat")
 
 def test_normalizer_latency_under_1ms():
     """Single normalization check executes well under 1ms (sub-millisecond benchmark)."""
