@@ -416,23 +416,45 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
     mod_result = await moderate_text(text)
     if session_manager.get_session_by_client(client_id) is not session or not session.is_active():
         return
-    if mod_result.is_bannable:
-        if not client_ip.startswith("test_innocent_"):
-            ban_manager.record_ban(ip=client_ip, reason=mod_result.reason or "Policy violation: toxic content", duration_seconds=settings.BAN_DURATION_SECONDS)
+
+    if mod_result.is_blocked:
+        # Withhold the message without penalizing the sender's IP. Shared Wi-Fi
+        # and carrier-grade NAT make IP bans unsafe for anonymous chat.
         await send_to_client(client_id, WebSocketEnvelope.create(
-            msg_type=ServerMessageType.BANNED,
-            payload={"reason": mod_result.reason or "Content policy violation", "ban_duration_seconds": settings.BAN_DURATION_SECONDS},
+            msg_type=ServerMessageType.ERROR,
+            payload={
+                "code": "MESSAGE_BLOCKED",
+                "message": "That message was blocked by the community safety rules. Please rephrase it respectfully.",
+            },
+            session_id=session.session_id,
+        ))
+        return
+
+    if mod_result.is_bannable:
+        # Explicit, directed violent threats end this connection and session.
+        # They do not create an IP ban: the current ban store is process-local,
+        # and an IP may be shared by unrelated users.
+        await send_to_client(client_id, WebSocketEnvelope.create(
+            msg_type=ServerMessageType.ERROR,
+            payload={
+                "code": "SEVERE_POLICY_VIOLATION",
+                "message": "This chat was ended because your message contained a direct violent threat.",
+            },
             session_id=session.session_id,
         ))
         partner_id = session.get_partner_id(client_id)
         if partner_id:
-            await send_to_client(partner_id, create_partner_banned_envelope(session.session_id))
+            await send_to_client(partner_id, create_partner_banned_envelope(
+                session.session_id,
+                reason="banned",
+                message="Your partner was disconnected for a serious safety violation.",
+            ))
         await session_manager.terminate_session(session.session_id, reason="banned")
-        session_manager.set_client_state(client_id, ClientState.BANNED)
+        session_manager.set_client_state(client_id, ClientState.DISCONNECTED)
         async with connections_lock:
             ws = active_connections.get(client_id)
         if ws:
-            await ws.close(code=1008, reason="Policy Violation")
+            await ws.close(code=1008, reason="Severe policy violation")
         return
 
     # Clean message passed moderation!
@@ -472,31 +494,8 @@ async def _handle_gif(client_id: str, client_ip: str, payload_data: dict, sessio
     safe_url = url.strip() if isinstance(url, str) else ""
 
     if mod_result.is_flagged:
-        # If url contains malware / exploit keywords, treat as severe bannable offense
-        if any(bad in safe_url.lower() for bad in ("malware", "exploit", "virus", "trojan")):
-            ban_manager.record_ban(
-                ip=client_ip,
-                reason="Policy violation: malicious link",
-                duration_seconds=settings.BAN_DURATION_SECONDS,
-            )
-            banned_env = WebSocketEnvelope.create(
-                msg_type=ServerMessageType.BANNED,
-                payload={"reason": "Malicious link", "ban_duration_seconds": settings.BAN_DURATION_SECONDS},
-                session_id=session.session_id,
-            )
-            await send_to_client(client_id, banned_env)
-            partner_id = session.get_partner_id(client_id)
-            if partner_id:
-                partner_env = create_partner_banned_envelope(session.session_id)
-                await send_to_client(partner_id, partner_env)
-            await session_manager.terminate_session(session.session_id, reason="banned")
-            session_manager.set_client_state(client_id, ClientState.BANNED)
-            async with connections_lock:
-                ws = active_connections.get(client_id)
-            if ws:
-                await ws.close(code=1008, reason="Policy Violation")
-            return
-
+        # Reject untrusted media, but a keyword in a URL path is not proof of intent
+        # and must never trigger an IP ban.
         err_env = WebSocketEnvelope.create(
             msg_type=ServerMessageType.ERROR,
             payload={"code": "INVALID_MEDIA_URL", "message": mod_result.reason or "Untrusted or invalid GIF URL"},
