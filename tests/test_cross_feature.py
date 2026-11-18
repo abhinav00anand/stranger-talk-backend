@@ -228,51 +228,26 @@ async def test_t3_chat_severe_threat_ends_session_and_partner_requeues(make_clie
 
 
 @pytest.mark.asyncio
-async def test_t3_gif_moderation_ban_and_ip_blacklist(make_client, server_ws_url):
-    """Violator sends forbidden URL, gets banned, and subsequent connection attempt from same IP is blocked.
-
-    Verifies media domain whitelist enforcement, IP ban caching, and handshake/pre-admission gatekeeper.
-    """
+async def test_t3_gif_moderation_blocks_untrusted_url_without_ip_ban(make_client, server_ws_url):
+    """Untrusted media URLs are rejected without disconnecting or IP-banning the sender."""
     client_a, client_b = await _pair_two_clients(make_client)
 
-    # Client A sends forbidden, non-allowlisted insecure HTTP GIF URL
     forbidden_url = "http://malicious-exploit-server.com/malware.gif"
     await client_a.send_gif(url=forbidden_url)
 
-    # Client A receives banned event or socket terminated
-    try:
-        ban_msg = await client_a.recv_type("banned", timeout=3.0)
-        assert ban_msg["type"] == "banned"
-    except Exception:
-        pass
+    error = await client_a.recv_type("error", timeout=3.0)
+    assert error["payload"]["code"] == "INVALID_MEDIA_URL"
+    assert client_a.close_code is None
 
-    try:
-        while True:
-            await client_a.recv_json(timeout=2.0)
-    except (websockets.exceptions.ConnectionClosed, Exception):
-        pass
-    assert client_a.close_code in (1008, 4403)
-
-    # Partner B does NOT receive the malicious GIF
     partner_drained = await client_b.drain(timeout=0.5)
     assert not any(m.get("type") == "gif" for m in partner_drained)
 
-    # Subsequent connection attempt from banned IP is rejected at handshake or immediately closed
+    # A rejected media URL is not proof of malicious intent; reconnect remains possible.
     from tests.conftest import AsyncStrangerClient
-    banned_client = AsyncStrangerClient(server_ws_url)
-    try:
-        await banned_client.connect(timeout=2.0)
-        try:
-            msg = await banned_client.recv_type("banned", timeout=2.0)
-            assert msg["type"] == "banned"
-        except Exception:
-            await banned_client.drain(timeout=0.5)
-            assert banned_client.close_code in (1008, 4403)
-    except (websockets.exceptions.InvalidStatus, websockets.exceptions.ConnectionClosed):
-        # HTTP 403 Forbidden handshake rejection or immediate close
-        pass
-    finally:
-        await banned_client.close()
+    reconnect_client = AsyncStrangerClient(server_ws_url)
+    await reconnect_client.connect(timeout=2.0)
+    assert reconnect_client.close_code is None
+    await reconnect_client.close()
 
 
 @pytest.mark.asyncio
