@@ -9,7 +9,7 @@ from typing import Any
 
 
 class ReportStore:
-    """Small SQLite report store; mount a persistent volume for restart durability."""
+    """SQLite report store; the configured path controls persistence and storage medium."""
 
     def __init__(self, db_path: str, retention_days: int = 90) -> None:
         self.db_path = db_path
