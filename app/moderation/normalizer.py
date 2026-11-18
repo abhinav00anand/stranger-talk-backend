@@ -132,7 +132,7 @@ TOXIC_PATTERNS = [
         "violent_threat",
         re.compile(
             r"(?<![a-z])(?:"
-            r"(?:i|im|we|he|she|they)[\W_]+(?:will|gonna|am[\W_]+going[\W_]+to|are[\W_]+going[\W_]+to|is[\W_]+going[\W_]+to)[\W_]+"
+            r"(?:i|im|i[\W_]+m|we)[\W_]+(?:will|gonna|am[\W_]+going[\W_]+to|are[\W_]+going[\W_]+to|is[\W_]+going[\W_]+to)[\W_]+"
             r"(?:hunt[\W_]+(?:you|u)[\W_]+down(?:[\W_]+and[\W_]+kill[\W_]+(?:you|u))?|"
             r"(?:kill|murder|slaughter|shoot|stab|choke|strangle)[\W_]+(?:you|u)|"
             r"(?:slit|cut)[\W_]+(?:your|ur)[\W_]+throat|"
