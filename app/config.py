@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     # Optional exact browser-origin allowlist.
     ALLOWED_ORIGINS: list[str] = []
     ALLOWED_GIF_DOMAINS: list[str] = [
+        "gifsnap.com",
+        "*.gifsnap.com",
         "giphy.com",
         "*.giphy.com",
         "media.giphy.com",
