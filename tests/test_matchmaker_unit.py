@@ -14,26 +14,22 @@ from app.models.session import ClientState, SessionStatus
 
 
 @pytest.mark.asyncio
-async def test_queue_never_pairs_two_bots():
-    """Verify bots are never paired with other bots, only with human clients."""
+async def test_normal_queue_never_pairs_any_bot_ticket():
+    """Bots are isolated in standby; the normal queue pairs humans only."""
     queue = MatchmakerQueue()
     await queue.enqueue("bot_1", is_bot=True, topics=["coding"])
     await queue.enqueue("bot_2", is_bot=True, topics=["coding"])
-
-    # They should NOT match each other even with shared topics
-    pair = await queue.try_pop_pair()
-    assert pair is None
-    assert queue.queue_size() == 2
-
-    # Now enqueue a real human user
     await queue.enqueue("human_1", is_bot=False, topics=["coding"])
 
-    # The human should be paired with one of the bots
+    # Even with matching topics, bot tickets must never enter a normal pair.
+    assert await queue.try_pop_pair() is None
+    assert queue.queue_size() == 3
+
+    # Two actual humans can still pair while bot tickets remain isolated.
+    await queue.enqueue("human_2", is_bot=False, topics=["coding"])
     pair = await queue.try_pop_pair()
-    assert pair is not None
-    assert "human_1" in pair
-    assert ("bot_1" in pair or "bot_2" in pair)
-    assert queue.queue_size() == 1
+    assert pair == ("human_1", "human_2")
+    assert queue.queue_size() == 2
 
 
 

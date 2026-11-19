@@ -65,14 +65,18 @@ class MatchmakerQueue:
         active_ids = active_connection_ids if active_connection_ids is not None else set()
 
         async with self._lock:
-            while self._standby_bots:
+            # Inspect each bot present at call time at most once. Re-appending a
+            # blocked bot inside an unbounded while-loop can otherwise spin forever
+            # when every standby bot is blocked for this human.
+            candidates_to_check = len(self._standby_bots)
+            for _ in range(candidates_to_check):
                 bot_id = self._standby_bots.popleft()
-                # Check socket is alive
+                # Drop disconnected bot sockets instead of retaining stale entries.
                 if active_connection_ids is not None and bot_id not in active_ids:
                     continue
-                # Check not blocked
+                # Keep blocked bots available for a different human, but do not
+                # repeatedly inspect the same bot during this lookup.
                 if tuple(sorted((human_client_id, bot_id))) in normalized_blocks:
-                    # Put to back of standby if still alive
                     self._standby_bots.append(bot_id)
                     continue
                 return bot_id
@@ -204,10 +208,11 @@ class MatchmakerQueue:
             def can_pair(left: str, right: str) -> bool:
                 if is_blocked(left, right):
                     return False
-                # Strict anti-bot pairing: Never match two bots together!
+                # The normal FIFO queue is strictly human-to-human. Bots belong
+                # exclusively in the authenticated standby pool, never in this path.
                 ticket_l = self._tickets.get(left)
                 ticket_r = self._tickets.get(right)
-                if ticket_l and ticket_r and ticket_l.is_bot and ticket_r.is_bot:
+                if not ticket_l or not ticket_r or ticket_l.is_bot or ticket_r.is_bot:
                     return False
                 return True
 

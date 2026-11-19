@@ -1,18 +1,33 @@
 # Stranger Talk Backend (ChatFreely)
 
-Real-time anonymous stranger chat and live WebRTC audio calling service inspired by OpenTalk. Built with FastAPI, WebSockets, STUN audio signaling, deterministic local moderation, and human-only matchmaking.
+Real-time anonymous stranger chat and live WebRTC audio calling service inspired by OpenTalk. Built with FastAPI, WebSockets, STUN audio signaling, deterministic local moderation, and human-first matchmaking with authenticated standby bots.
 
 ---
 
 ## 🌟 Core Features
 
 - **Live 1-on-1 WebRTC Voice Signaling**: Peer-to-peer audio streaming using Google public STUN (`stun:stun.l.google.com:19302`) with deterministic initiator assignment for glare-free SDP negotiation.
-- **Dynamic Matchmaking Engine**: FIFO pairing queue with topic matching, instant skip re-queueing, and graceful leave disconnects.
+- **Dynamic Matchmaking Engine**: Human-first FIFO pairing with topic matching, authenticated standby bots for quiet periods, instant skip re-queueing, and graceful leave disconnects.
 - **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and support for client-selected GifSnap GIFs. Every GIF URL is validated server-side before relay.
 - **Local Content Moderation & Enforcement**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
   - Explicit direct threats and repeated blocked messages end the offending connection with a clear `banned` event. This connection-scoped action does not issue a new IP ban, avoiding collateral bans on shared networks.
   - Users can report or block the current stranger; reports are rate-limited, stored in a RAM-backed SQLite database, and do not automatically ban the reported person.
+
+---
+
+## Trusted standby bots
+
+Automated bot connections are disabled unless `BOT_AUTH_TOKEN` is configured on the backend.
+Set a long, random secret as the backend environment variable `BOT_AUTH_TOKEN`, then have
+each trusted bot connect to `/ws` with the WebSocket header
+`X-TalkFreely-Bot-Token: <same-secret>`. Never put this token in the public website or
+ship it to browsers. A client-supplied `is_bot` field is not authentication and is rejected
+unless the connection has already passed this server-side check.
+
+Authenticated bots wait in a separate standby pool and are only assigned to human users.
+When a human ends a conversation, the connected bot is returned to standby automatically.
+Unset `BOT_AUTH_TOKEN` to disable bot connections.
 
 ---
 
@@ -62,7 +77,7 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 | Type | Payload Example | Description |
 | :--- | :--- | :--- |
 | `queued` | `{"position": 1, "estimated_wait_seconds": null}` | Queue status confirmation; wait estimate is currently unavailable. |
-| `matched` | `{"is_initiator": true, "peer_alias": "Stranger", "partner_id": "...", "ice_servers": [...]}` | Paired with another connected human. |
+| `matched` | `{"is_initiator": true, "peer_alias": "Stranger", "peer_is_bot": false, "partner_id": "...", "ice_servers": [...]}` | Paired with another connected human. |
 | `chat` | `{"text": "Hey!", "sender": "peer", "message_id": "..."}` | Inbound text message. |
 | `gif` | `{"url": "...", "width": 400, "height": 300, "sender": "peer"}` | Inbound validated GIF. |
 | `typing` | `{"is_typing": true}` | Partner typing status. |
