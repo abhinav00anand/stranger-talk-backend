@@ -102,3 +102,30 @@ async def test_human_skip_partner_bot_is_returned_to_standby(monkeypatch):
     assert queue.standby_bot_count() == 1
     assert queue.queue_size() == 1
     assert any(client_id == "trusted-bot" and envelope.type == main.ServerMessageType.QUEUED for client_id, envelope in sent)
+
+@pytest.mark.asyncio
+async def test_two_authenticated_bots_never_match_each_other(monkeypatch):
+    import app.main as main
+    from app.matchmaker.session_manager import SessionManager
+
+    queue = MatchmakerQueue()
+    sessions = SessionManager()
+    monkeypatch.setattr(main, "matchmaker_queue", queue)
+    monkeypatch.setattr(main, "session_manager", sessions)
+    monkeypatch.setattr(main, "bot_connections", {"trusted-bot-a", "trusted-bot-b"})
+    monkeypatch.setattr(main, "active_connections", {
+        "trusted-bot-a": object(),
+        "trusted-bot-b": object(),
+    })
+
+    async def fake_send(client_id, envelope):
+        return True
+
+    monkeypatch.setattr(main, "send_to_client", fake_send)
+
+    await main._handle_join_queue("trusted-bot-a", "192.0.2.20", {})
+    await main._handle_join_queue("trusted-bot-b", "192.0.2.21", {})
+
+    assert queue.queue_size() == 0
+    assert queue.standby_bot_count() == 2
+    assert sessions.active_session_count() == 0
