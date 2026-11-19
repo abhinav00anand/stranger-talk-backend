@@ -16,6 +16,21 @@ Real-time anonymous stranger chat and live WebRTC audio calling service inspired
 
 ---
 
+## Trusted standby bots
+
+Automated bot connections are disabled unless `BOT_AUTH_TOKEN` is configured on the backend.
+Set a long, random secret as the backend environment variable `BOT_AUTH_TOKEN`, then have
+each trusted bot connect to `/ws` with the WebSocket header
+`X-TalkFreely-Bot-Token: <same-secret>`. Never put this token in the public website or
+ship it to browsers. A client-supplied `is_bot` field is not authentication and is rejected
+unless the connection has already passed this server-side check.
+
+Authenticated bots wait in a separate standby pool and are only assigned to human users.
+When a human ends a conversation, the connected bot is returned to standby automatically.
+Unset `BOT_AUTH_TOKEN` to disable bot connections.
+
+---
+
 ## 📡 Live Production Endpoints (Railway)
 
 - **HTTP Base URL**: `https://stranger-talk-api-production.up.railway.app`
