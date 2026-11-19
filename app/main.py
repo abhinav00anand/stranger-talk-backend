@@ -111,6 +111,8 @@ reported_sessions: set[tuple[str, str]] = set()
 
 # Active WebSocket connections: client_id -> WebSocket
 active_connections: dict[str, WebSocket] = {}
+# Populated only after a WebSocket proves possession of BOT_AUTH_TOKEN.
+bot_connections: set[str] = set()
 connection_ips: dict[str, str] = {}
 moderation_strikes: dict[str, int] = {}
 connections_lock = asyncio.Lock()
@@ -232,6 +234,28 @@ async def health_check():
     }
 
 
+async def _return_bot_to_standby(bot_id: str) -> bool:
+    """Return a still-connected authenticated bot to standby after its human leaves."""
+    if bot_id not in bot_connections:
+        return False
+    async with connections_lock:
+        is_connected = bot_id in active_connections
+    if not is_connected:
+        return False
+    await matchmaker_queue.register_standby_bot(bot_id)
+    session_manager.set_client_state(bot_id, ClientState.IDLE)
+    await send_to_client(
+        bot_id,
+        WebSocketEnvelope.create(
+            msg_type=ServerMessageType.QUEUED,
+            payload=QueuedPayload(position=0, estimated_wait_seconds=None).model_dump(),
+            session_id=None,
+        ),
+    )
+    logger.info("Authenticated bot returned to standby client_id=%s", bot_id)
+    return True
+
+
 async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict) -> None:
     """Handle join_queue command with FIFO human-only pairing."""
     # Check if client is banned
@@ -289,7 +313,24 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
         await send_to_client(client_id, err_env)
         return
 
-    if validated.is_bot:
+    # A client-supplied is_bot flag is not proof of identity. Only a WebSocket
+    # authenticated with the server-side bot token may enter the standby pool.
+    is_authenticated_bot = client_id in bot_connections
+    if validated.is_bot and not is_authenticated_bot:
+        await send_to_client(
+            client_id,
+            WebSocketEnvelope.create(
+                msg_type=ServerMessageType.ERROR,
+                payload={
+                    "code": "BOT_AUTH_REQUIRED",
+                    "message": "Bot connections must authenticate with the server-issued bot token.",
+                },
+                session_id=None,
+            ),
+        )
+        return
+
+    if is_authenticated_bot:
         await matchmaker_queue.register_standby_bot(client_id)
         session_manager.set_client_state(client_id, ClientState.IDLE)
         queued_env = WebSocketEnvelope.create(
@@ -298,7 +339,7 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
             session_id=None,
         )
         await send_to_client(client_id, queued_env)
-        logger.info("Bot registered to standby pool client_id=%s total_standby=%d", client_id, matchmaker_queue.standby_bot_count())
+        logger.info("Authenticated bot registered to standby pool client_id=%s total_standby=%d", client_id, matchmaker_queue.standby_bot_count())
         return
 
     await matchmaker_queue.enqueue(
@@ -479,6 +520,7 @@ async def _handle_skip(client_id: str, client_ip: str, session_id: str | None) -
             session_id=session.session_id,
         )
         await send_to_client(partner_id, disc_env)
+        await _return_bot_to_standby(partner_id)
 
     # Automatically re-queue skipping client
     await _handle_join_queue(client_id, client_ip, {})
@@ -518,6 +560,7 @@ async def _handle_leave(client_id: str, session_id: str | None) -> None:
             session_id=session.session_id,
         )
         await send_to_client(partner_id, disc_env)
+        await _return_bot_to_standby(partner_id)
 
     left_env = WebSocketEnvelope.create(
         msg_type=ServerMessageType.LEFT_SESSION,
@@ -752,6 +795,7 @@ async def _end_session_after_safety_action(
             ).model_dump(),
             session_id=session.session_id,
         ))
+        await _return_bot_to_standby(partner_id)
 
     await send_to_client(client_id, WebSocketEnvelope.create(
         msg_type=success_type,
@@ -1038,8 +1082,24 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="IP is banned")
         return
 
+    supplied_bot_token = websocket.headers.get("x-talkfreely-bot-token")
+    is_authenticated_bot = bool(
+        settings.BOT_AUTH_TOKEN
+        and supplied_bot_token
+        and hmac.compare_digest(supplied_bot_token, settings.BOT_AUTH_TOKEN)
+    )
+    if supplied_bot_token and not is_authenticated_bot:
+        logger.warning("WebSocket rejected reason=invalid_bot_token")
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid bot credentials",
+        )
+        return
+
     await websocket.accept()
     client_id = str(uuid.uuid4())
+    if is_authenticated_bot:
+        bot_connections.add(client_id)
     connected_at = monotonic()
     logger.info("WebSocket connected client_id=%s", client_id)
 
@@ -1136,10 +1196,12 @@ async def websocket_endpoint(websocket: WebSocket):
         if session and partner_id:
             disc_env = WebSocketEnvelope.create(msg_type=ServerMessageType.PEER_DISCONNECTED, payload=PeerDisconnectedPayload(reason="disconnected", can_requeue=True).model_dump(), session_id=session.session_id)
             await send_to_client(partner_id, disc_env)
+            await _return_bot_to_standby(partner_id)
         async with connections_lock:
             active_connections.pop(client_id, None)
             connection_ips.pop(client_id, None)
             moderation_strikes.pop(client_id, None)
+        bot_connections.discard(client_id)
         blocked_pairs.difference_update(pair for pair in list(blocked_pairs) if client_id in pair)
         reported_sessions.difference_update(key for key in list(reported_sessions) if key[0] == client_id)
         report_rate_limiter._events.pop(client_id, None)
