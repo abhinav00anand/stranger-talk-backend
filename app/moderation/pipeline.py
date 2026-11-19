@@ -19,6 +19,8 @@ from app.moderation.normalizer import TextNormalizer, text_normalizer
 logger = logging.getLogger(__name__)
 
 DEFAULT_ALLOWED_GIF_DOMAINS = [
+    "gifsnap.com",
+    "*.gifsnap.com",
     "giphy.com",
     "*.giphy.com",
     "media.giphy.com",

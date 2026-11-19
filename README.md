@@ -8,7 +8,7 @@ Real-time anonymous stranger chat and live WebRTC audio calling service inspired
 
 - **Live 1-on-1 WebRTC Voice Signaling**: Peer-to-peer audio streaming using Google public STUN (`stun:stun.l.google.com:19302`) with deterministic initiator assignment for glare-free SDP negotiation.
 - **Dynamic Matchmaking Engine**: FIFO pairing queue with topic matching, instant skip re-queueing, and graceful leave disconnects.
-- **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and support for client-selected GIPHY GIFs. Every GIF URL is validated server-side before relay.
+- **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and support for client-selected GifSnap GIFs. Every GIF URL is validated server-side before relay.
 - **Local Content Moderation & Enforcement**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
   - Explicit direct threats and repeated blocked messages end the offending connection with a clear `banned` event. This connection-scoped action does not issue a new IP ban, avoiding collateral bans on shared networks.
@@ -48,7 +48,7 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 | `skip` | `{}` | Skip current partner; instantly re-queues you and notifies partner. |
 | `leave` | `{}` | Terminate session and return to idle state. |
 | `chat` | `{"text": "Hello stranger!"}` | Send a text message to current partner. |
-| `gif` | `{"url": "https://media.giphy.com/...", "width": 400, "height": 300}` | Send a validated GIF link. |
+| `gif` | `{"url": "https://media.example-cdn.com/...", "provider": "gifsnap", "id": "provider-gif-id", "width": 400, "height": 300}` | Send a validated GIF link. |
 | `typing` | `{"is_typing": true}` | Dispatch typing status indicator. |
 | `offer` | `{"sdp": "...", "type": "offer"}` | Relay WebRTC SDP Offer to peer. |
 | `answer` | `{"sdp": "...", "type": "answer"}` | Relay WebRTC SDP Answer to initiator. |
@@ -89,13 +89,16 @@ py -3.14 -m pytest -q
 
 ---
 
-## Safety Reports and GIPHY GIF Search
+## Safety Reports and GifSnap GIF Search
 
 - `REPORTS_DB_PATH`: SQLite report database path. **Default: `/dev/shm/talkfreely_reports.sqlite3`**, which uses Linux `tmpfs` (RAM-backed temporary storage). No Railway volume is required.
 - `REPORT_RETENTION_DAYS`: report retention window (default 90 days; expired reports are pruned during startup and report access/submission).
 - `REPORTS_ADMIN_TOKEN`: set a long random secret to enable `GET /admin/reports`; pass it in the `X-Admin-Token` header. Never put this token in the frontend.
-- `NEXT_PUBLIC_GIPHY_API_KEY`: configure this in the **frontend/Vercel** deployment, not the backend. GIPHY requires Search API requests to originate in the browser, so this is a public, rate-limited client key—not a secret. See the frontend README for setup instructions.
-- GIPHY search results use the PG rating. The browser sends the selected URL to this backend, which enforces HTTPS and the `giphy.com` domain allowlist before relaying the media. Tenor's API was decommissioned on June 30, 2026, so the product uses GIPHY rather than a non-working Tenor integration.
+- GIF search uses GifSnap's public REST API, which currently does not require an API key. No GIF API secret or frontend environment variable is required.
+- GifSnap media may be hosted on external provider/CDN domains. The backend validates HTTPS, hostname, port, and the configured `ALLOWED_GIF_DOMAINS` list before relaying media. Keep that allowlist aligned with the actual media hosts returned by GifSnap; never replace it with an unrestricted arbitrary-host policy.
+- The public GifSnap API is currently best-effort and has no published availability SLA. GIF media rights remain subject to the respective media sources' terms.
+- The documented GifSnap search endpoint does not expose a GIPHY-style PG rating filter. URL validation only checks media transport/host safety; it does not inspect image content or guarantee age-appropriate results. Review this limitation before enabling GIF search for teen users.
+
 
 **Storage trade-off:** report records exist only for the lifetime of the Railway container. They are lost when the service restarts, redeploys, or is replaced. This is intentional for the RAM-only configuration. The default path is a Linux `/dev/shm` tmpfs; if that directory is unavailable or not writable in the deployment, report storage initialization fails closed and report submissions/admin reads remain unavailable rather than silently falling back to disk.
 

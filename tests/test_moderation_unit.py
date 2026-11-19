@@ -389,6 +389,17 @@ def test_production_cannot_disable_moderation():
 # 4. GIF URL Validator Tests
 # ============================================================================
 
+def test_gif_valid_gifsnap_urls():
+    """GifSnap root and subdomains are approved media hosts."""
+    pipeline = ModerationPipeline()
+    for url in (
+        "https://gifsnap.com/media/reaction.webp",
+        "https://cdn.gifsnap.com/media/reaction.gif",
+        "https://media.cdn.gifsnap.com/reaction.webp",
+    ):
+        assert pipeline.moderate_gif_url(url).is_clean is True
+
+
 def test_gif_valid_giphy_urls():
     """Approved Giphy URLs on root and subdomains are allowed."""
     valid_urls = [
