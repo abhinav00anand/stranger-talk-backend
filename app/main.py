@@ -378,12 +378,12 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
                 ice_servers = [{"urls": list(settings.STUN_SERVERS)}]
                 env_human = WebSocketEnvelope.create(
                     msg_type=ServerMessageType.MATCHED,
-                    payload={"is_initiator": False, "peer_alias": "Stranger", "partner_id": bot_id, "ice_servers": ice_servers},
+                    payload={"is_initiator": False, "peer_alias": "TalkFreely bot", "peer_is_bot": True, "partner_id": bot_id, "ice_servers": ice_servers},
                     session_id=session.session_id,
                 )
                 env_bot = WebSocketEnvelope.create(
                     msg_type=ServerMessageType.MATCHED,
-                    payload={"is_initiator": True, "peer_alias": "Stranger", "partner_id": client_id, "ice_servers": ice_servers},
+                    payload={"is_initiator": True, "peer_alias": "Stranger", "peer_is_bot": False, "partner_id": client_id, "ice_servers": ice_servers},
                     session_id=session.session_id,
                 )
                 del_h, del_b = await asyncio.gather(
@@ -433,12 +433,12 @@ async def _pair_waiting_clients() -> None:
         ice_servers = [{"urls": list(settings.STUN_SERVERS)}]
         env_a = WebSocketEnvelope.create(
             msg_type=ServerMessageType.MATCHED,
-            payload={"is_initiator": True, "peer_alias": "Stranger", "partner_id": client_b, "ice_servers": ice_servers},
+            payload={"is_initiator": True, "peer_alias": "Stranger", "peer_is_bot": False, "partner_id": client_b, "ice_servers": ice_servers},
             session_id=session.session_id,
         )
         env_b = WebSocketEnvelope.create(
             msg_type=ServerMessageType.MATCHED,
-            payload={"is_initiator": False, "peer_alias": "Stranger", "partner_id": client_a, "ice_servers": ice_servers},
+            payload={"is_initiator": False, "peer_alias": "Stranger", "peer_is_bot": False, "partner_id": client_a, "ice_servers": ice_servers},
             session_id=session.session_id,
         )
         delivered_a, delivered_b = await asyncio.gather(
