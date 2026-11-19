@@ -296,6 +296,24 @@ async def _pair_waiting_clients() -> None:
         if pair is None:
             return
         client_a, client_b = pair
+
+        # Ghost validation: If either client is no longer an active connection, discard it immediately!
+        async with connections_lock:
+            a_alive = client_a in active_connections
+            b_alive = client_b in active_connections
+        if not a_alive or not b_alive:
+            for dead_cid, is_dead in ((client_a, not a_alive), (client_b, not b_alive)):
+                if is_dead:
+                    await matchmaker_queue.pop_client(dead_cid)
+                    session_manager.forget_client(dead_cid)
+            # If one was alive, put it back at the front of the queue
+            for alive_cid, is_alive in ((client_a, a_alive), (client_b, b_alive)):
+                if is_alive:
+                    async with connections_lock:
+                        ip = connection_ips.get(alive_cid)
+                    await matchmaker_queue.enqueue(client_id=alive_cid, ip=ip)
+            continue
+
         session = await session_manager.create_session(client_a=client_a, client_b=client_b)
         ice_servers = [{"urls": list(settings.STUN_SERVERS)}]
         env_a = WebSocketEnvelope.create(
