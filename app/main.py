@@ -509,6 +509,11 @@ async def _handle_skip(client_id: str, client_ip: str, session_id: str | None) -
 
     partner_id = session.get_partner_id(client_id)
 
+    # "Skip / Next" means this exact pair should not be selected again during
+    # either live connection, including when the partner is a standby bot.
+    if partner_id:
+        blocked_pairs.add(_blocked_pair_key(client_id, partner_id))
+
     # Terminate session
     await session_manager.terminate_session(session.session_id, reason="skipping")
 
