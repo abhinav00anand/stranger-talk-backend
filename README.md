@@ -1,13 +1,13 @@
 # Stranger Talk Backend (ChatFreely)
 
-Real-time anonymous stranger chat and live WebRTC audio calling service inspired by OpenTalk. Built with FastAPI, WebSockets, STUN audio signaling, deterministic local moderation, and human-only matchmaking.
+Real-time anonymous stranger chat and live WebRTC audio calling service inspired by OpenTalk. Built with FastAPI, WebSockets, STUN audio signaling, deterministic local moderation, and human-first matchmaking with authenticated standby bots.
 
 ---
 
 ## 🌟 Core Features
 
 - **Live 1-on-1 WebRTC Voice Signaling**: Peer-to-peer audio streaming using Google public STUN (`stun:stun.l.google.com:19302`) with deterministic initiator assignment for glare-free SDP negotiation.
-- **Dynamic Matchmaking Engine**: FIFO pairing queue with topic matching, instant skip re-queueing, and graceful leave disconnects.
+- **Dynamic Matchmaking Engine**: Human-first FIFO pairing with topic matching, authenticated standby bots for quiet periods, instant skip re-queueing, and graceful leave disconnects.
 - **In-Session Messaging, Reports, Blocking & GIFs**: Real-time text messaging, safety reports stored in SQLite, connection-scoped block controls, and support for client-selected GifSnap GIFs. Every GIF URL is validated server-side before relay.
 - **Local Content Moderation & Enforcement**:
   - *Stage 1*: Fast-path regex and advanced normalization (leetspeak, zero-width spaces, Cyrillic/Greek homoglyphs).
@@ -77,7 +77,7 @@ Every session-scoped message (chat, GIF, typing, skip, leave, and WebRTC signali
 | Type | Payload Example | Description |
 | :--- | :--- | :--- |
 | `queued` | `{"position": 1, "estimated_wait_seconds": null}` | Queue status confirmation; wait estimate is currently unavailable. |
-| `matched` | `{"is_initiator": true, "peer_alias": "Stranger", "partner_id": "...", "ice_servers": [...]}` | Paired with another connected human. |
+| `matched` | `{"is_initiator": true, "peer_alias": "Stranger", "peer_is_bot": false, "partner_id": "...", "ice_servers": [...]}` | Paired with another connected human. |
 | `chat` | `{"text": "Hey!", "sender": "peer", "message_id": "..."}` | Inbound text message. |
 | `gif` | `{"url": "...", "width": 400, "height": 300, "sender": "peer"}` | Inbound validated GIF. |
 | `typing` | `{"is_typing": true}` | Partner typing status. |
