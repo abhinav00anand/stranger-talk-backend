@@ -97,6 +97,7 @@ py -3.14 -m pytest -q
 - GIF search uses GifSnap's public REST API, which currently does not require an API key. No GIF API secret or frontend environment variable is required.
 - GifSnap media may be hosted on external provider/CDN domains. The backend validates HTTPS, hostname, port, and the configured `ALLOWED_GIF_DOMAINS` list before relaying media. Keep that allowlist aligned with the actual media hosts returned by GifSnap; never replace it with an unrestricted arbitrary-host policy.
 - The public GifSnap API is currently best-effort and has no published availability SLA. GIF media rights remain subject to the respective media sources' terms.
+- The documented GifSnap search endpoint does not expose a GIPHY-style PG rating filter. URL validation only checks media transport/host safety; it does not inspect image content or guarantee age-appropriate results. Review this limitation before enabling GIF search for teen users.
 
 
 **Storage trade-off:** report records exist only for the lifetime of the Railway container. They are lost when the service restarts, redeploys, or is replaced. This is intentional for the RAM-only configuration. The default path is a Linux `/dev/shm` tmpfs; if that directory is unavailable or not writable in the deployment, report storage initialization fails closed and report submissions/admin reads remain unavailable rather than silently falling back to disk.
