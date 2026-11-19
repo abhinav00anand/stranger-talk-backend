@@ -132,6 +132,21 @@ async def test_t1_f6_valid_giphy_url_relayed(make_client):
 
 
 @pytest.mark.asyncio
+async def test_t1_f6_gifsnap_provider_and_id_are_preserved(make_client):
+    """GifSnap provider metadata is retained in the relayed GIF envelope."""
+    client_a, client_b = await _pair_two_clients(make_client)
+
+    media_url = "https://media.giphy.com/media/test/giphy.gif"
+    await client_a.send_gif(url=media_url, provider="gifsnap", id="gif_123")
+
+    msg = await client_b.recv_type("gif", timeout=5.0)
+    payload = msg.get("payload", {})
+    assert payload.get("url") == media_url
+    assert payload.get("provider") == "gifsnap"
+    assert payload.get("id") == "gif_123"
+
+
+@pytest.mark.asyncio
 async def test_t1_f6_valid_tenor_url_relayed(make_client):
     """Client sends valid Tenor HTTPS URL; partner receives gif message with matching URL."""
     client_a, client_b = await _pair_two_clients(make_client)
