@@ -89,6 +89,7 @@ async def test_human_skip_partner_bot_is_returned_to_standby(monkeypatch):
     monkeypatch.setattr(main, "session_manager", sessions)
     monkeypatch.setattr(main, "bot_connections", {"trusted-bot"})
     monkeypatch.setattr(main, "active_connections", {"trusted-bot": object()})
+    monkeypatch.setattr(main, "blocked_pairs", set())
 
     async def fake_send(client_id, envelope):
         sent.append((client_id, envelope))
