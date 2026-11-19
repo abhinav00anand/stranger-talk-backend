@@ -29,10 +29,54 @@ class MatchmakerQueue:
         self._lock = asyncio.Lock()
         self._tickets: Dict[str, QueueTicket] = {}
         self._queue: deque[str] = deque()
+        self._standby_bots: deque[str] = deque()
 
     def queue_size(self) -> int:
         """Return the current number of active waiting tickets (O(1))."""
         return len(self._tickets)
+
+    def standby_bot_count(self) -> int:
+        """Return the current number of available standby bots."""
+        return len(self._standby_bots)
+
+    async def register_standby_bot(self, client_id: str) -> None:
+        """Register an active bot connection into the standby pool."""
+        async with self._lock:
+            if client_id not in self._standby_bots:
+                self._standby_bots.append(client_id)
+
+    async def unregister_standby_bot(self, client_id: str) -> bool:
+        """Remove a bot connection from the standby pool."""
+        async with self._lock:
+            try:
+                self._standby_bots.remove(client_id)
+                return True
+            except ValueError:
+                return False
+
+    async def pop_standby_bot(
+        self,
+        human_client_id: str,
+        blocked_pairs: Optional[Set[Tuple[str, str]]] = None,
+        active_connection_ids: Optional[Set[str]] = None,
+    ) -> Optional[str]:
+        """Atomically pop an available standby bot for a waiting human client."""
+        normalized_blocks = blocked_pairs or set()
+        active_ids = active_connection_ids if active_connection_ids is not None else set()
+
+        async with self._lock:
+            while self._standby_bots:
+                bot_id = self._standby_bots.popleft()
+                # Check socket is alive
+                if active_connection_ids is not None and bot_id not in active_ids:
+                    continue
+                # Check not blocked
+                if tuple(sorted((human_client_id, bot_id))) in normalized_blocks:
+                    # Put to back of standby if still alive
+                    self._standby_bots.append(bot_id)
+                    continue
+                return bot_id
+            return None
 
     async def get_ticket(self, client_id: str) -> Optional[QueueTicket]:
         """Retrieve a client's active queue ticket if present."""
@@ -124,6 +168,7 @@ class MatchmakerQueue:
         async with self._lock:
             self._tickets.clear()
             self._queue.clear()
+            self._standby_bots.clear()
 
     async def try_pop_pair(
         self,

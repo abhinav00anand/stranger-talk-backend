@@ -270,11 +270,23 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
         await send_to_client(client_id, err_env)
         return
 
+    if validated.is_bot:
+        await matchmaker_queue.register_standby_bot(client_id)
+        session_manager.set_client_state(client_id, ClientState.IDLE)
+        queued_env = WebSocketEnvelope.create(
+            msg_type=ServerMessageType.QUEUED,
+            payload=QueuedPayload(position=0, estimated_wait_seconds=None).model_dump(),
+            session_id=None,
+        )
+        await send_to_client(client_id, queued_env)
+        logger.info("Bot registered to standby pool client_id=%s total_standby=%d", client_id, matchmaker_queue.standby_bot_count())
+        return
+
     await matchmaker_queue.enqueue(
         client_id=client_id,
         ip=client_ip,
         topics=validated.topics,
-        is_bot=validated.is_bot,
+        is_bot=False,
     )
     session_manager.set_client_state(client_id, ClientState.QUEUED)
 
@@ -287,6 +299,49 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
     await send_to_client(client_id, queued_env)
 
     await _pair_waiting_clients()
+
+    # On-Demand Bot Match: If this human has no human partner, immediately check for a standby bot!
+    current_state = session_manager.get_client_state(client_id)
+    if current_state == ClientState.QUEUED:
+        async with connections_lock:
+            active_ids = set(active_connections.keys())
+        bot_id = await matchmaker_queue.pop_standby_bot(
+            human_client_id=client_id,
+            blocked_pairs=blocked_pairs,
+            active_connection_ids=active_ids,
+        )
+        if bot_id:
+            # Atomically pop human from waiting tickets
+            human_ticket = await matchmaker_queue.pop_client(client_id)
+            if human_ticket:
+                session = await session_manager.create_session(client_a=client_id, client_b=bot_id)
+                ice_servers = [{"urls": list(settings.STUN_SERVERS)}]
+                env_human = WebSocketEnvelope.create(
+                    msg_type=ServerMessageType.MATCHED,
+                    payload={"is_initiator": False, "peer_alias": "Stranger", "partner_id": bot_id, "ice_servers": ice_servers},
+                    session_id=session.session_id,
+                )
+                env_bot = WebSocketEnvelope.create(
+                    msg_type=ServerMessageType.MATCHED,
+                    payload={"is_initiator": True, "peer_alias": "Stranger", "partner_id": client_id, "ice_servers": ice_servers},
+                    session_id=session.session_id,
+                )
+                del_h, del_b = await asyncio.gather(
+                    send_to_client(client_id, env_human), send_to_client(bot_id, env_bot)
+                )
+                if del_h and del_b:
+                    logger.info("On-demand bot match delivered: Human %s <-> Bot %s", client_id, bot_id)
+                else:
+                    await session_manager.terminate_session(session.session_id, reason="disconnected")
+                    # If human is still connected, re-queue
+                    async with connections_lock:
+                        h_alive = client_id in active_connections
+                        b_alive = bot_id in active_connections
+                    if h_alive:
+                        await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, is_bot=False)
+                        session_manager.set_client_state(client_id, ClientState.QUEUED)
+                    if b_alive:
+                        await matchmaker_queue.register_standby_bot(bot_id)
 
 
 async def _pair_waiting_clients() -> None:
@@ -358,6 +413,7 @@ async def _pair_waiting_clients() -> None:
 
 async def _handle_leave_queue(client_id: str) -> None:
     """Handle leave_queue cancellation command."""
+    await matchmaker_queue.unregister_standby_bot(client_id)
     popped = await matchmaker_queue.pop_client(client_id)
     if popped:
         session_manager.set_client_state(client_id, ClientState.IDLE)
@@ -1068,6 +1124,7 @@ async def websocket_endpoint(websocket: WebSocket):
         blocked_pairs.difference_update(pair for pair in list(blocked_pairs) if client_id in pair)
         reported_sessions.difference_update(key for key in list(reported_sessions) if key[0] == client_id)
         report_rate_limiter._events.pop(client_id, None)
+        await matchmaker_queue.unregister_standby_bot(client_id)
         await matchmaker_queue.pop_client(client_id)
         session_manager.forget_client(client_id)
         logger.info(
