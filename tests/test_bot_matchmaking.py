@@ -79,7 +79,7 @@ async def test_authenticated_bot_enters_standby_pool_not_human_queue(monkeypatch
 @pytest.mark.asyncio
 async def test_human_skip_partner_bot_is_returned_to_standby(monkeypatch):
     import app.main as main
-    from app.models.session import SessionManager
+    from app.matchmaker.session_manager import SessionManager
 
     queue = MatchmakerQueue()
     sessions = SessionManager()
