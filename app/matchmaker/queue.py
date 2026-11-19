@@ -208,10 +208,11 @@ class MatchmakerQueue:
             def can_pair(left: str, right: str) -> bool:
                 if is_blocked(left, right):
                     return False
-                # Strict anti-bot pairing: Never match two bots together!
+                # The normal FIFO queue is strictly human-to-human. Bots belong
+                # exclusively in the authenticated standby pool, never in this path.
                 ticket_l = self._tickets.get(left)
                 ticket_r = self._tickets.get(right)
-                if ticket_l and ticket_r and ticket_l.is_bot and ticket_r.is_bot:
+                if not ticket_l or not ticket_r or ticket_l.is_bot or ticket_r.is_bot:
                     return False
                 return True
 
