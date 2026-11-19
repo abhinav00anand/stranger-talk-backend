@@ -654,6 +654,7 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
                     message="Your partner was disconnected after repeated safety violations.",
                 ))
             await session_manager.terminate_session(session.session_id, reason="banned")
+            await _return_bot_to_standby(partner_id)
             session_manager.set_client_state(client_id, ClientState.BANNED)
             async with connections_lock:
                 ws = active_connections.get(client_id)
@@ -694,6 +695,7 @@ async def _handle_chat(client_id: str, client_ip: str, payload_data: dict, sessi
                 message="Your partner was disconnected for a serious safety violation.",
             ))
         await session_manager.terminate_session(session.session_id, reason="banned")
+        await _return_bot_to_standby(partner_id)
         session_manager.set_client_state(client_id, ClientState.BANNED)
         async with connections_lock:
             ws = active_connections.get(client_id)
