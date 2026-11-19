@@ -293,6 +293,40 @@ class SessionManager:
             )
             return session
 
+    async def prune_empty_sessions(self, active_client_ids: set[str]) -> list[str]:
+        """Terminate and remove any active sessions where one or both participants are no longer connected."""
+        pruned_session_ids = []
+        async with self._lock:
+            # Snapshot sessions to safely iterate
+            for session_id, session in list(self._sessions.items()):
+                if not session.is_active():
+                    continue
+                a_live = session.client_a in active_client_ids
+                b_live = session.client_b in active_client_ids
+                if not a_live or not b_live:
+                    # At least one user has zero connection / disconnected
+                    session.status = SessionStatus.DISCONNECTED
+                    self._client_to_session.pop(session.client_a, None)
+                    self._client_to_session.pop(session.client_b, None)
+                    self._sessions.pop(session_id, None)
+                    if a_live:
+                        self._client_states[session.client_a] = ClientState.IDLE
+                    else:
+                        self._client_states.pop(session.client_a, None)
+                    if b_live:
+                        self._client_states[session.client_b] = ClientState.IDLE
+                    else:
+                        self._client_states.pop(session.client_b, None)
+                    self._record_terminated(session)
+                    pruned_session_ids.append(session_id)
+                    logger.info(
+                        "Pruned dead/empty session: session_id=%s (client_a_live=%s, client_b_live=%s)",
+                        session_id,
+                        a_live,
+                        b_live,
+                    )
+        return pruned_session_ids
+
     def reset(self) -> None:
         """Reset all internal state maps (used in tests/fixtures)."""
         self._sessions.clear()

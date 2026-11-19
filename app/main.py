@@ -135,6 +135,22 @@ async def send_to_client(client_id: str, envelope: WebSocketEnvelope | dict) -> 
         return False
 
 
+async def _cleanup_empty_sessions_loop():
+    """Periodically scan and purge empty or disconnected sessions every 10 seconds."""
+    while True:
+        try:
+            await asyncio.sleep(10.0)
+            async with connections_lock:
+                active_ids = set(active_connections.keys())
+            pruned = await session_manager.prune_empty_sessions(active_ids)
+            if pruned:
+                logger.info("Automatically cleaned up %d empty session(s): %s", len(pruned), pruned)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Error in empty session cleanup task")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI application lifespan."""
@@ -147,7 +163,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         reports_ready = False
         logger.exception("Safety report storage is unavailable; report submissions will fail closed")
+    
+    cleanup_task = asyncio.create_task(_cleanup_empty_sessions_loop())
     yield
+    cleanup_task.cancel()
     logger.info("Shutting down ChatFreely services...")
 
 
