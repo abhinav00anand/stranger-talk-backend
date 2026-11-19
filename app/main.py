@@ -371,37 +371,57 @@ async def _handle_join_queue(client_id: str, client_ip: str, payload_data: dict)
             active_connection_ids=active_ids,
         )
         if bot_id:
-            # Atomically pop human from waiting tickets
+            # Atomically pop human from waiting tickets. If another concurrent
+            # transition already removed it, release the reserved bot immediately.
             human_ticket = await matchmaker_queue.pop_client(client_id)
-            if human_ticket:
-                session = await session_manager.create_session(client_a=client_id, client_b=bot_id)
-                ice_servers = [{"urls": list(settings.STUN_SERVERS)}]
-                env_human = WebSocketEnvelope.create(
-                    msg_type=ServerMessageType.MATCHED,
-                    payload={"is_initiator": False, "peer_alias": "TalkFreely bot", "peer_is_bot": True, "partner_id": bot_id, "ice_servers": ice_servers},
-                    session_id=session.session_id,
-                )
-                env_bot = WebSocketEnvelope.create(
-                    msg_type=ServerMessageType.MATCHED,
-                    payload={"is_initiator": True, "peer_alias": "Stranger", "peer_is_bot": False, "partner_id": client_id, "ice_servers": ice_servers},
-                    session_id=session.session_id,
-                )
-                del_h, del_b = await asyncio.gather(
-                    send_to_client(client_id, env_human), send_to_client(bot_id, env_bot)
-                )
-                if del_h and del_b:
-                    logger.info("On-demand bot match delivered: Human %s <-> Bot %s", client_id, bot_id)
-                else:
-                    await session_manager.terminate_session(session.session_id, reason="disconnected")
-                    # If human is still connected, re-queue
-                    async with connections_lock:
-                        h_alive = client_id in active_connections
-                        b_alive = bot_id in active_connections
-                    if h_alive:
-                        await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, is_bot=False)
-                        session_manager.set_client_state(client_id, ClientState.QUEUED)
-                    if b_alive:
-                        await matchmaker_queue.register_standby_bot(bot_id)
+            if not human_ticket:
+                await _return_bot_to_standby(bot_id)
+                return
+
+            session = await session_manager.create_session(client_a=client_id, client_b=bot_id)
+            ice_servers = [{"urls": list(settings.STUN_SERVERS)}]
+            env_human = WebSocketEnvelope.create(
+                msg_type=ServerMessageType.MATCHED,
+                payload={"is_initiator": False, "peer_alias": "TalkFreely bot", "peer_is_bot": True, "partner_id": bot_id, "ice_servers": ice_servers},
+                session_id=session.session_id,
+            )
+            env_bot = WebSocketEnvelope.create(
+                msg_type=ServerMessageType.MATCHED,
+                payload={"is_initiator": True, "peer_alias": "Stranger", "peer_is_bot": False, "partner_id": client_id, "ice_servers": ice_servers},
+                session_id=session.session_id,
+            )
+            del_h, del_b = await asyncio.gather(
+                send_to_client(client_id, env_human), send_to_client(bot_id, env_bot)
+            )
+            if del_h and del_b:
+                logger.info("On-demand bot match delivered: Human %s <-> Bot %s", client_id, bot_id)
+            else:
+                await session_manager.terminate_session(session.session_id, reason="disconnected")
+                async with connections_lock:
+                    h_alive = client_id in active_connections
+                    b_alive = bot_id in active_connections
+                if h_alive:
+                    if del_h:
+                        await send_to_client(client_id, WebSocketEnvelope.create(
+                            msg_type=ServerMessageType.PEER_DISCONNECTED,
+                            payload=PeerDisconnectedPayload(reason="disconnected", can_requeue=True).model_dump(),
+                            session_id=session.session_id,
+                        ))
+                    await matchmaker_queue.enqueue(client_id=client_id, ip=client_ip, is_bot=False)
+                    session_manager.set_client_state(client_id, ClientState.QUEUED)
+                    await send_to_client(client_id, WebSocketEnvelope.create(
+                        msg_type=ServerMessageType.QUEUED,
+                        payload=QueuedPayload(position=matchmaker_queue.queue_size()).model_dump(),
+                        session_id=None,
+                    ))
+                if b_alive:
+                    if del_b:
+                        await send_to_client(bot_id, WebSocketEnvelope.create(
+                            msg_type=ServerMessageType.PEER_DISCONNECTED,
+                            payload=PeerDisconnectedPayload(reason="disconnected", can_requeue=True).model_dump(),
+                            session_id=session.session_id,
+                        ))
+                    await _return_bot_to_standby(bot_id)
 
 
 async def _pair_waiting_clients() -> None:
