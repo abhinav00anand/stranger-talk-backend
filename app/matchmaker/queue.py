@@ -65,14 +65,18 @@ class MatchmakerQueue:
         active_ids = active_connection_ids if active_connection_ids is not None else set()
 
         async with self._lock:
-            while self._standby_bots:
+            # Inspect each bot present at call time at most once. Re-appending a
+            # blocked bot inside an unbounded while-loop can otherwise spin forever
+            # when every standby bot is blocked for this human.
+            candidates_to_check = len(self._standby_bots)
+            for _ in range(candidates_to_check):
                 bot_id = self._standby_bots.popleft()
-                # Check socket is alive
+                # Drop disconnected bot sockets instead of retaining stale entries.
                 if active_connection_ids is not None and bot_id not in active_ids:
                     continue
-                # Check not blocked
+                # Keep blocked bots available for a different human, but do not
+                # repeatedly inspect the same bot during this lookup.
                 if tuple(sorted((human_client_id, bot_id))) in normalized_blocks:
-                    # Put to back of standby if still alive
                     self._standby_bots.append(bot_id)
                     continue
                 return bot_id
