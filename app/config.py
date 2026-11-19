@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     REPORTS_DB_PATH: str = "/dev/shm/talkfreely_reports.sqlite3"
     REPORT_RETENTION_DAYS: int = 90
     REPORTS_ADMIN_TOKEN: str | None = None
+    # Shared secret for trusted bot WebSocket clients. Bots are disabled when unset.
+    BOT_AUTH_TOKEN: str | None = None
     WS_RATE_LIMIT_MESSAGES: int = 60
     WS_RATE_LIMIT_WINDOW_SECONDS: float = 10.0
 
